@@ -4,12 +4,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import TYPE_CHECKING
 
 import aiohttp
 
 import config
+from trade_journal import JOURNAL_DIR
 
 if TYPE_CHECKING:
     from main import ScalpingBot
@@ -131,6 +133,134 @@ def _build_resumen(bot: ScalpingBot) -> str:
 
 
 # ------------------------------------------------------------------
+# JSONL helpers (read-only, no bot state required)
+# ------------------------------------------------------------------
+
+def _load_all_trades() -> list[dict]:
+    """Read every .jsonl in journals/ and return sorted list of trade dicts."""
+    trades: list[dict] = []
+    if not os.path.isdir(JOURNAL_DIR):
+        return trades
+    for fname in sorted(os.listdir(JOURNAL_DIR)):
+        if not fname.endswith(".jsonl"):
+            continue
+        fpath = os.path.join(JOURNAL_DIR, fname)
+        try:
+            with open(fpath, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        trades.append(json.loads(line))
+        except Exception as exc:
+            logger.warning("_load_all_trades %s: %s", fpath, exc)
+    return trades
+
+
+def _build_stats() -> str:
+    trades = _load_all_trades()
+    n = len(trades)
+    if n == 0:
+        return "📊 *STATS*\nSin trades registrados aún."
+
+    wins   = [t["pnl_usd"] for t in trades if t.get("pnl_usd", 0) > 0]
+    losses = [abs(t["pnl_usd"]) for t in trades if t.get("pnl_usd", 0) < 0]
+
+    wr      = len(wins) / n * 100
+    avg_win  = sum(wins)   / len(wins)   if wins   else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    payoff   = avg_win / avg_loss        if avg_loss > 0 else 0.0
+    be_wr    = 100.0 / (1 + payoff)     if payoff > 0   else 50.0
+    net_pnl  = sum(t.get("pnl_usd", 0) for t in trades)
+
+    sep = "━━━━━━━━━━━━━━━"
+    lines = [
+        f"📊 *STATS* ({n} trades)\n{sep}",
+        f"WR: `{wr:.1f}%` | BE\\_WR: `{be_wr:.1f}%`",
+        f"Avg W: `${avg_win:.2f}` | Avg L: `${avg_loss:.2f}`",
+        f"Payoff: `{payoff:.2f}`",
+        f"Net PnL: `${net_pnl:+.2f}`",
+        sep,
+    ]
+    if wr < be_wr:
+        lines.append("⚠️ *WR < BE\\_WR — estrategia en pérdida*")
+    return "\n".join(lines)
+
+
+def _build_lado() -> str:
+    trades = _load_all_trades()
+    if not trades:
+        return "📊 *LADO*\nSin trades registrados aún."
+
+    def _side_block(label: str, subset: list[dict]) -> str:
+        n = len(subset)
+        if n == 0:
+            return f"*{label}* — sin trades"
+        wins   = [t["pnl_usd"] for t in subset if t.get("pnl_usd", 0) > 0]
+        losses = [abs(t["pnl_usd"]) for t in subset if t.get("pnl_usd", 0) < 0]
+        wr       = len(wins) / n * 100
+        avg_win  = sum(wins)   / len(wins)   if wins   else 0.0
+        avg_loss = sum(losses) / len(losses) if losses else 0.0
+        net_pnl  = sum(t.get("pnl_usd", 0) for t in subset)
+        return (
+            f"*{label}* — {n}t\n"
+            f"  WR: `{wr:.1f}%` | Avg W: `${avg_win:.2f}` | Avg L: `${avg_loss:.2f}`\n"
+            f"  Net PnL: `${net_pnl:+.2f}`"
+        )
+
+    longs  = [t for t in trades if t.get("side") == "LONG"]
+    shorts = [t for t in trades if t.get("side") == "SHORT"]
+    sep = "━━━━━━━━━━━━━━━"
+    lines = [
+        f"📊 *LADO* ({len(trades)} trades)\n{sep}",
+        _side_block("LONG 📈", longs),
+        _side_block("SHORT 📉", shorts),
+    ]
+    return "\n".join(lines)
+
+
+def _build_ultimo() -> str:
+    trades = _load_all_trades()
+    if not trades:
+        return "🔍 *ÚLTIMO TRADE*\nSin trades registrados aún."
+
+    t = trades[-1]
+    pnl     = t.get("pnl_usd", 0.0)
+    pnl_pct = t.get("pnl_pct", 0.0)
+    emoji   = "✅" if pnl > 0 else "❌"
+    ts      = t.get("timestamp", "N/A")
+
+    sep = "━━━━━━━━━━━━━━━"
+    lines = [
+        f"🔍 *ÚLTIMO TRADE*\n{sep}",
+        f"{emoji} `{t.get('side')}` — {t.get('exit_reason')}",
+        f"Entry: `${t.get('entry', 0):.2f}` → Exit: `${t.get('exit_price', 0):.2f}`",
+        f"PnL: `${pnl:+.4f}` ({pnl_pct:+.2f}%)",
+        f"RSI entrada: `{t.get('rsi_at_entry', 0):.2f}`",
+        f"ATR entrada: `{t.get('atr_at_entry', 0):.2f}`",
+        f"Cierre (UTC): `{ts}`",
+        f"Duración: `N/A`",
+    ]
+    return "\n".join(lines)
+
+
+def _build_config() -> str:
+    paper = "✅ PAPER" if config.PAPER_MODE else "🔴 LIVE"
+    sep = "━━━━━━━━━━━━━━━"
+    lines = [
+        f"⚙️ *CONFIG ACTIVA*\n{sep}",
+        f"Modo: `{paper}`",
+        f"Capital inicial: `${config.INITIAL_CAPITAL:.0f}`",
+        sep,
+        f"RSI Oversold: `{config.RSI_OVERSOLD}`",
+        f"RSI Overbought: `{config.RSI_OVERBOUGHT}`",
+        f"SL: `{config.SL_PCT * 100:.2f}%` | TP: `{config.TP_PCT * 100:.2f}%`",
+        f"Pos. Size: `{config.POSITION_SIZE_PCT * 100:.1f}%`",
+        f"Cooldown: `{config.COOLDOWN_SECONDS}s`",
+    ]
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------
 # Command dispatcher
 # ------------------------------------------------------------------
 
@@ -183,11 +313,27 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
             await tg_send_document(filename, content,
                                    caption=f"📦 {len(trades)} trades exportados")
 
+    elif text.startswith("/stats"):
+        await tg_send(_build_stats())
+
+    elif text.startswith("/lado"):
+        await tg_send(_build_lado())
+
+    elif text.startswith("/ultimo"):
+        await tg_send(_build_ultimo())
+
+    elif text.startswith("/config"):
+        await tg_send(_build_config())
+
     elif text.startswith("/ayuda") or text.startswith("/help") or text.startswith("/start"):
         await tg_send(
             "*Comandos disponibles:*\n"
             "`/status` — estado actual (FSM, EMA200, RSI, cooldown)\n"
             "`/resumen` — resumen completo con métricas\n"
+            "`/stats` — WR%, payoff, BE\\_WR, net PnL (JSONL)\n"
+            "`/lado` — desglose LONG vs SHORT\n"
+            "`/ultimo` — detalle del último trade cerrado\n"
+            "`/config` — parámetros activos del bot\n"
             "`/down_trades` — descargar historial de trades JSON\n"
             "`/cerrar` — cerrar posición abierta (MANUAL)\n"
             "`/pausa` — pausar nuevas entradas\n"
