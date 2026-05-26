@@ -3,7 +3,10 @@ from collections import deque
 from typing import Optional
 
 import pandas as pd
-import pandas_ta as ta  # type: ignore[import]
+try:
+    import pandas_ta as ta
+except ImportError:
+    import pandas_ta_classic as ta
 
 import config
 
