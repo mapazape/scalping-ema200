@@ -127,9 +127,9 @@ class ScalpingBot:
         logger.info("balance=%.2f | entering event loop", self.broker.balance)
 
         await tg.tg_send(
-            f"Bot iniciado\nSymbol: {config.SYMBOL}\n"
-            f"Capital: ${self.broker.balance:.2f}\n"
-            f"Paper mode: {config.PAPER_MODE}"
+            f"🚀 *Bot iniciado*\n"
+            f"Symbol: `{config.SYMBOL}` | Paper: `{config.PAPER_MODE}`\n"
+            f"Capital: `${self.broker.balance:.2f}`"
         )
 
         asyncio.create_task(tg.tg_poll(self), name="tg_poll")
@@ -181,12 +181,12 @@ class ScalpingBot:
         self.stats.record(trade)
         self.journal.record(trade)
 
+        emoji = "✅" if trade["pnl_usd"] > 0 else "❌"
         await tg.tg_send(
-            f"<b>TRADE CERRADO</b>\n"
-            f"{trade['side']} | {reason}\n"
-            f"Entry: {trade['entry_price']:.2f} → Exit: {exit_price:.2f}\n"
-            f"PnL: ${trade['pnl_usd']:+.4f} ({trade['pnl_pct']:+.2f}%)\n"
-            f"Balance: ${self.broker.balance:.2f}"
+            f"{emoji} *TRADE CERRADO* — `{reason}`\n"
+            f"`{trade['side']}` | entry: `{trade['entry_price']:.2f}` → exit: `{exit_price:.2f}`\n"
+            f"PnL: `${trade['pnl_usd']:+.4f}` ({trade['pnl_pct']:+.2f}%)\n"
+            f"Balance: `${self.broker.balance:.2f}`"
         )
 
         if trade["pnl_usd"] < 0:
@@ -223,11 +223,11 @@ class ScalpingBot:
         position = self.broker.open_position(order)
         if position is not None:
             self._transition(State.IDLE, State.IN_POSITION, reason=order["side"])
+            emoji = "📗" if order["side"] == "LONG" else "📕"
             await tg.tg_send(
-                f"<b>TRADE ABIERTO</b>\n"
-                f"{order['side']} @ {order['entry_price']:.2f}\n"
-                f"SL: {order['sl']:.2f} | TP: {order['tp']:.2f}\n"
-                f"Notional: ${order['notional']:.2f} | Qty: {order['qty']:.6f}"
+                f"{emoji} *TRADE ABIERTO* — `{order['side']}`\n"
+                f"@ `{order['entry_price']:.2f}` | SL: `{order['sl']:.2f}` | TP: `{order['tp']:.2f}`\n"
+                f"Notional: `${order['notional']:.2f}` | Qty: `{order['qty']:.6f}`"
             )
 
     def _transition(self, from_state: State, to_state: State, *, reason: str = "") -> None:
