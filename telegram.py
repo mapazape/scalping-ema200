@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -238,8 +239,18 @@ def _build_ultimo() -> str:
         f"RSI entrada: `{t.get('rsi_at_entry', 0):.2f}`",
         f"ATR entrada: `{t.get('atr_at_entry', 0):.2f}`",
         f"Cierre (UTC): `{ts}`",
-        f"Duración: `N/A`",
     ]
+    open_t = t.get("open_time")
+    if open_t is not None:
+        try:
+            close_t = datetime.fromisoformat(ts).timestamp() if ts != "N/A" else time.time()
+            secs = int(close_t - open_t)
+            dur_str = f"{secs//60}m {secs%60}s"
+        except Exception:
+            dur_str = "N/A"
+    else:
+        dur_str = "N/A"
+    lines.append(f"Duración: `{dur_str}`")
     return "\n".join(lines)
 
 
