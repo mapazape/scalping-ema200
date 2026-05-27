@@ -395,7 +395,7 @@ async def tg_poll(bot: ScalpingBot) -> None:
                 logger.error("tg_poll HTTP %s", exc)
                 await asyncio.sleep(5)
         except Exception as exc:
-            logger.error("tg_poll error: %s", exc)
+            logger.error("tg_poll error: %r", exc)
             await asyncio.sleep(5)
 
 
