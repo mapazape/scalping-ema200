@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-import aiohttp
+import requests
 
 import config
 from trade_journal import JOURNAL_DIR
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _tg_offset: int = 0
+_session = requests.Session()
 
 HEARTBEAT_SEG: int = 3600
 
@@ -38,10 +39,11 @@ async def tg_send(text: str, parse_mode: str = "Markdown") -> None:
     if parse_mode:
         payload["parse_mode"] = parse_mode
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status != 200:
-                    logger.warning("tg_send HTTP %s: %s", resp.status, await resp.text())
+        def _post() -> None:
+            r = _session.post(url, json=payload, timeout=30)
+            if not r.ok:
+                logger.warning("tg_send HTTP %s: %s", r.status_code, r.text[:300])
+        await asyncio.to_thread(_post)
     except Exception as exc:
         logger.error("tg_send error: %s", exc)
 
@@ -52,31 +54,27 @@ async def tg_send_document(filename: str, content: bytes, caption: str = "") -> 
         return
     url = _API.format(token=config.TG_TOKEN, method="sendDocument")
     try:
-        async with aiohttp.ClientSession() as session:
-            form = aiohttp.FormData()
-            form.add_field("chat_id", str(config.TG_CHAT_ID))
+        def _post() -> None:
+            data: dict = {"chat_id": str(config.TG_CHAT_ID)}
             if caption:
-                form.add_field("caption", caption)
-            form.add_field("document", content, filename=filename,
-                           content_type="application/octet-stream")
-            async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status != 200:
-                    logger.warning("tg_send_document HTTP %s", resp.status)
+                data["caption"] = caption
+            files = {"document": (filename, content, "application/octet-stream")}
+            r = _session.post(url, data=data, files=files, timeout=15)
+            if not r.ok:
+                logger.warning("tg_send_document HTTP %s", r.status_code)
+        await asyncio.to_thread(_post)
     except Exception as exc:
         logger.error("tg_send_document error: %s", exc)
 
 
-async def _get_updates(offset: int, timeout: int = 25) -> list[dict]:
+def _get_updates_sync(offset: int, timeout: int = 25) -> list[dict]:
     url = _API.format(token=config.TG_TOKEN, method="getUpdates")
     params = {"offset": offset, "timeout": timeout, "limit": 10}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            url, params=params, timeout=aiohttp.ClientTimeout(total=timeout + 5)
-        ) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            if data.get("ok"):
-                return data["result"]
+    r = _session.get(url, params=params, timeout=timeout + 5)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("ok"):
+        return data["result"]
     return []
 
 
@@ -423,7 +421,7 @@ async def tg_poll(bot: ScalpingBot) -> None:
 
     # Drain backlog — skip messages sent before bot started
     try:
-        updates = await _get_updates(-1, timeout=0)
+        updates = await asyncio.to_thread(_get_updates_sync, -1, 0)
         if updates:
             _tg_offset = updates[-1]["update_id"] + 1
     except Exception as exc:
@@ -435,7 +433,7 @@ async def tg_poll(bot: ScalpingBot) -> None:
 
     while True:
         try:
-            updates = await _get_updates(_tg_offset, timeout=25)
+            updates = await asyncio.to_thread(_get_updates_sync, _tg_offset, 25)
             conflict_count = 0
             _retry = 0
             for update in updates:
@@ -444,8 +442,9 @@ async def tg_poll(bot: ScalpingBot) -> None:
                     await _handle_update(update, bot)
                 except Exception as exc:
                     logger.error("handle_update error: %s", exc)
-        except aiohttp.ClientResponseError as exc:
-            if exc.status == 409:
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if status == 409:
                 conflict_count += 1
                 if conflict_count == 1:
                     logger.warning("tg_poll 409 conflict — another instance active, waiting 60s")

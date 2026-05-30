@@ -30,6 +30,11 @@ M1_BOOTSTRAP_LIMIT: int = 50
 
 BINANCE_WS_BASE: str = "wss://stream.binance.com:9443/stream"
 BINANCE_REST_BASE: str = "https://api.binance.com/api/v3"
+BINANCE_FUTURES_REST_BASE: str = "https://fapi.binance.com"
+
+# Binance API credentials (required for live balance fetch)
+BINANCE_API_KEY: str    = os.getenv("BINANCE_API_KEY", "")
+BINANCE_API_SECRET: str = os.getenv("BINANCE_API_SECRET", "")
 
 # Position sizing
 POSITION_SIZE_PCT: float = float(os.getenv("POSITION_SIZE_PCT", "0.10"))

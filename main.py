@@ -4,6 +4,8 @@ Connects data_feed → indicators → signal_engine → risk_engine → executio
 """
 import asyncio
 import glob
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -11,6 +13,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
+
+import aiohttp
 
 import config
 import telegram as tg
@@ -27,6 +31,42 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 logger = logging.getLogger("main")
+
+
+# ------------------------------------------------------------------
+# Binance Futures balance helper
+# ------------------------------------------------------------------
+
+async def fetch_futures_usdt_balance() -> Optional[float]:
+    """Return available USDT balance from Binance Futures, or None on failure."""
+    if not config.BINANCE_API_KEY or not config.BINANCE_API_SECRET:
+        return None
+    ts = int(time.time() * 1000)
+    qs = f"timestamp={ts}"
+    sig = hmac.new(
+        config.BINANCE_API_SECRET.encode(),
+        qs.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    url = f"{config.BINANCE_FUTURES_REST_BASE}/fapi/v2/balance?{qs}&signature={sig}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                headers={"X-MBX-APIKEY": config.BINANCE_API_KEY},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("fetch_futures_usdt_balance HTTP %s", resp.status)
+                    return None
+                data = await resp.json()
+                for asset in data:
+                    if asset.get("asset") == "USDT":
+                        return float(asset["availableBalance"])
+                logger.warning("fetch_futures_usdt_balance: USDT not found in response")
+    except Exception as exc:
+        logger.warning("fetch_futures_usdt_balance failed: %r", exc)
+    return None
 
 
 # ------------------------------------------------------------------
@@ -139,6 +179,16 @@ class ScalpingBot:
         if count:
             logger.info("hydrated stats from journal: %d trades loaded", count)
 
+    async def _refresh_balance(self) -> None:
+        real = await fetch_futures_usdt_balance()
+        if real is not None:
+            self.broker.balance = real
+            logger.info("balance refreshed from Binance Futures: %.2f USDT", real)
+        else:
+            logger.warning(
+                "balance refresh unavailable — using current %.2f", self.broker.balance
+            )
+
     async def run(self) -> None:
         logger.info(
             "starting | symbol=%s paper_mode=%s capital=%.2f",
@@ -146,6 +196,9 @@ class ScalpingBot:
         )
         h1, m1 = await self.feed.bootstrap()
         self.indicators.load_bootstrap(h1, m1)
+
+        await self._refresh_balance()
+        self.stats.initial_balance = self.broker.balance
         logger.info("balance=%.2f | entering event loop", self.broker.balance)
 
         await tg.tg_send(
@@ -156,6 +209,7 @@ class ScalpingBot:
 
         asyncio.create_task(tg.tg_poll(self), name="tg_poll")
         asyncio.create_task(tg.heartbeat(self), name="tg_heartbeat")
+        asyncio.create_task(self._log_periodic(), name="log_periodic")
 
         await self.feed.run()
 
@@ -170,6 +224,7 @@ class ScalpingBot:
         if trade:
             self.stats.record(trade)
             self.journal.record(trade)
+            await self._refresh_balance()
             self._transition(self.state, State.IDLE, reason="MANUAL_CERRAR")
         return trade
 
@@ -202,6 +257,7 @@ class ScalpingBot:
 
         self.stats.record(trade)
         self.journal.record(trade)
+        await self._refresh_balance()
 
         emoji = "✅" if trade["pnl_usd"] > 0 else "❌"
         await tg.tg_send(
@@ -251,6 +307,30 @@ class ScalpingBot:
                 f"@ `{order['entry_price']:.2f}` | SL: `{order['sl']:.2f}` | TP: `{order['tp']:.2f}`\n"
                 f"Notional: `${order['notional']:.2f}` | Qty: `{order['qty']:.6f}`"
             )
+
+    async def _log_periodic(self) -> None:
+        """Log key indicators every 60 s."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                price = self.indicators.last_close_1m()
+                ema   = self.indicators.ema200_1h()
+                rsi_pair = self.indicators.rsi14_1m()
+                rsi   = rsi_pair[1] if rsi_pair else None
+                if price is not None and ema is not None:
+                    regime = "BULL" if price > ema else "BEAR"
+                else:
+                    regime = "N/A"
+                logger.info(
+                    "heartbeat | price=%.2f rsi=%s ema200=%s regime=%s fsm=%s",
+                    price if price is not None else 0.0,
+                    f"{rsi:.2f}" if rsi is not None else "N/A",
+                    f"{ema:.2f}" if ema is not None else "N/A",
+                    regime,
+                    self.state.name,
+                )
+            except Exception as exc:
+                logger.warning("_log_periodic error: %r", exc)
 
     def _transition(self, from_state: State, to_state: State, *, reason: str = "") -> None:
         logger.info(
