@@ -254,6 +254,56 @@ def _build_ultimo() -> str:
     return "\n".join(lines)
 
 
+def _build_posicion(bot: ScalpingBot) -> str:
+    from execution import Position  # noqa: F401 — type hint only
+    pos = bot.broker.position
+    balance = bot.broker.balance
+    sep = "━━━━━━━━━━━━━━━"
+
+    lines = [
+        f"📍 *POSICIÓN*\n{sep}",
+        f"Estado FSM: `{bot.state.name}`",
+        f"Balance: `${balance:.2f}`",
+    ]
+
+    if pos is None:
+        lines.append(f"\n_Sin posición abierta._")
+        return "\n".join(lines)
+
+    current_price = bot.broker._bid if pos.side == "LONG" else bot.broker._ask
+
+    if current_price is not None:
+        if pos.side == "LONG":
+            gross = (current_price - pos.entry_price) * pos.qty
+        else:
+            gross = (pos.entry_price - current_price) * pos.qty
+        fee_exit = current_price * pos.qty * config.TAKER_FEE
+        unreal = gross - fee_exit
+        cost_basis = pos.entry_price * pos.qty
+        unreal_pct = (unreal / cost_basis * 100.0) if cost_basis else 0.0
+        pnl_str = f"`${unreal:+.4f}` ({unreal_pct:+.2f}%)"
+        price_str = f"`${current_price:.2f}`"
+    else:
+        pnl_str = "`N/A`"
+        price_str = "`N/A`"
+
+    secs = int(time.time() - pos.open_time)
+    dur_str = f"{secs // 60}m {secs % 60}s"
+    side_emoji = "📗" if pos.side == "LONG" else "📕"
+
+    lines += [
+        sep,
+        f"{side_emoji} Side: `{pos.side}`",
+        f"Entry: `${pos.entry_price:.2f}`",
+        f"SL: `${pos.sl:.2f}`",
+        f"TP: `${pos.tp:.2f}`",
+        f"Precio actual: {price_str}",
+        f"PnL no realizado: {pnl_str}",
+        f"Duración: `{dur_str}`",
+    ]
+    return "\n".join(lines)
+
+
 def _build_config() -> str:
     paper = "✅ PAPER" if config.PAPER_MODE else "🔴 LIVE"
     sep = "━━━━━━━━━━━━━━━"
@@ -336,6 +386,9 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
     elif text.startswith("/config"):
         await tg_send(_build_config())
 
+    elif text.startswith("/posicion"):
+        await tg_send(_build_posicion(bot))
+
     elif text.startswith("/ayuda") or text.startswith("/help") or text.startswith("/start"):
         await tg_send(
             "*Comandos disponibles:*\n"
@@ -344,6 +397,7 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
             "`/stats` — WR%, payoff, BE\\_WR, net PnL (JSONL)\n"
             "`/lado` — desglose LONG vs SHORT\n"
             "`/ultimo` — detalle del último trade cerrado\n"
+            "`/posicion` — estado FSM, side, entry/SL/TP, PnL no realizado\n"
             "`/config` — parámetros activos del bot\n"
             "`/down_trades` — descargar historial de trades JSON\n"
             "`/cerrar` — cerrar posición abierta (MANUAL)\n"

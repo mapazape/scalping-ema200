@@ -3,6 +3,8 @@ Scalping bot — FSM: IDLE ↔ IN_POSITION
 Connects data_feed → indicators → signal_engine → risk_engine → execution → trade_journal.
 """
 import asyncio
+import glob
+import json
 import logging
 import time
 from collections import Counter
@@ -106,6 +108,7 @@ class ScalpingBot:
         self.risk_engine = RiskEngine(self.indicators)
         self.journal = TradeJournal()
         self.stats = Stats(initial_balance=config.INITIAL_CAPITAL)
+        self._hydrate_stats_from_journal()
 
         self.feed = DataFeed(
             on_kline_1m=self._on_kline_1m,
@@ -116,6 +119,25 @@ class ScalpingBot:
     # ------------------------------------------------------------------
     # Startup
     # ------------------------------------------------------------------
+
+    def _hydrate_stats_from_journal(self) -> None:
+        paths = sorted(glob.glob(f"{self.journal.journal_dir}/*.jsonl"))
+        count = 0
+        for path in paths:
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        if entry.get("pnl_usd") is not None:
+                            self.stats.record(entry)
+                            count += 1
+                    except json.JSONDecodeError:
+                        logger.warning("journal: malformed line in %s", path)
+        if count:
+            logger.info("hydrated stats from journal: %d trades loaded", count)
 
     async def run(self) -> None:
         logger.info(
