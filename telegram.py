@@ -29,12 +29,14 @@ HEARTBEAT_SEG: int = 3600
 # Low-level senders
 # ------------------------------------------------------------------
 
-async def tg_send(text: str) -> None:
+async def tg_send(text: str, parse_mode: str = "Markdown") -> None:
     """Send message. Silent failure if no token configured."""
     if not config.TG_TOKEN or not config.TG_CHAT_ID:
         return
     url = _API.format(token=config.TG_TOKEN, method="sendMessage")
-    payload = {"chat_id": config.TG_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    payload: dict = {"chat_id": config.TG_CHAT_ID, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
@@ -391,19 +393,20 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
 
     elif text.startswith("/ayuda") or text.startswith("/help") or text.startswith("/start"):
         await tg_send(
-            "*Comandos disponibles:*\n"
-            "`/status` — estado actual (FSM, EMA200, RSI, cooldown)\n"
-            "`/resumen` — resumen completo con métricas\n"
-            "`/stats` — WR%, payoff, BE\\_WR, net PnL (JSONL)\n"
-            "`/lado` — desglose LONG vs SHORT\n"
-            "`/ultimo` — detalle del último trade cerrado\n"
-            "`/posicion` — estado FSM, side, entry/SL/TP, PnL no realizado\n"
-            "`/config` — parámetros activos del bot\n"
-            "`/down_trades` — descargar historial de trades JSON\n"
-            "`/cerrar` — cerrar posición abierta (MANUAL)\n"
-            "`/pausa` — pausar nuevas entradas\n"
-            "`/reanudar` — reanudar entradas\n"
-            "`/ayuda` — esta ayuda"
+            "Comandos disponibles:\n"
+            "/status — estado actual (FSM, EMA200, RSI, cooldown)\n"
+            "/resumen — resumen completo con métricas\n"
+            "/stats — WR%, payoff, BE_WR, net PnL (JSONL)\n"
+            "/lado — desglose LONG vs SHORT\n"
+            "/ultimo — detalle del último trade cerrado\n"
+            "/posicion — estado FSM, side, entry/SL/TP, PnL no realizado\n"
+            "/config — parámetros activos del bot\n"
+            "/down_trades — descargar historial de trades JSON\n"
+            "/cerrar — cerrar posición abierta (MANUAL)\n"
+            "/pausa — pausar nuevas entradas\n"
+            "/reanudar — reanudar entradas\n"
+            "/ayuda — esta ayuda",
+            parse_mode="",
         )
 
 
