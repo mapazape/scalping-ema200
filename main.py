@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -141,6 +142,7 @@ class ScalpingBot:
         self.state: State = State.IDLE
         self._cooldown_until: float = 0.0
         self._paused: bool = False
+        self._state_file = "/opt/bots/scalping-ema200/state.json"
 
         self.indicators = Indicators()
         self.broker = PaperBroker()
@@ -179,6 +181,15 @@ class ScalpingBot:
         if count:
             logger.info("hydrated stats from journal: %d trades loaded", count)
 
+    def _hydrate_position_from_state(self) -> None:
+        restored = self.broker.restore_state(self._state_file)
+        if restored is not None:
+            self._transition(State.IDLE, State.IN_POSITION, reason="STATE_RESTORE")
+            logger.info(
+                "position restored: %s entry=%.2f sl=%.2f tp=%.2f",
+                restored.side, restored.entry_price, restored.sl, restored.tp,
+            )
+
     async def _refresh_balance(self) -> None:
         real = await fetch_futures_usdt_balance()
         if real is not None:
@@ -198,6 +209,7 @@ class ScalpingBot:
         self.indicators.load_bootstrap(h1, m1)
 
         await self._refresh_balance()
+        self._hydrate_position_from_state()
         self.stats.initial_balance = self.broker.balance
         logger.info("balance=%.2f | entering event loop", self.broker.balance)
 
@@ -222,6 +234,10 @@ class ScalpingBot:
             return None
         trade = self.broker.close_at_market("MANUAL_CERRAR")
         if trade:
+            try:
+                os.unlink(self._state_file)
+            except FileNotFoundError:
+                pass
             self.stats.record(trade)
             self.journal.record(trade)
             await self._refresh_balance()
@@ -254,6 +270,11 @@ class ScalpingBot:
         trade = self.broker.close_position(exit_price, reason)
         if trade is None:
             return
+
+        try:
+            os.unlink(self._state_file)
+        except FileNotFoundError:
+            pass
 
         self.stats.record(trade)
         self.journal.record(trade)
@@ -304,6 +325,7 @@ class ScalpingBot:
 
         position = self.broker.open_position(order)
         if position is not None:
+            self.broker.save_state(self._state_file)
             self._transition(State.IDLE, State.IN_POSITION, reason=order["side"])
             emoji = "📗" if order["side"] == "LONG" else "📕"
             await tg.tg_send(

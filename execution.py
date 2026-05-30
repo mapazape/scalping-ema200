@@ -1,6 +1,7 @@
+import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 import config
@@ -122,6 +123,24 @@ class PaperBroker:
         else:
             price = self._ask if self._ask is not None else self.position.entry_price
         return self.close_position(price, reason)
+
+    def save_state(self, path: str) -> None:
+        if self.position is None:
+            return
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(asdict(self.position), fh)
+
+    def restore_state(self, path: str) -> Optional[Position]:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.position = Position(**data)
+            return self.position
+        except FileNotFoundError:
+            return None
+        except Exception as exc:
+            logger.warning("restore_state failed: %r", exc)
+            return None
 
     def check_sl_tp(self) -> Optional[tuple[float, str]]:
         """
