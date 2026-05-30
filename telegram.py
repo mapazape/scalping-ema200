@@ -37,7 +37,7 @@ async def tg_send(text: str) -> None:
     payload = {"chat_id": config.TG_CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status != 200:
                     logger.warning("tg_send HTTP %s: %s", resp.status, await resp.text())
     except Exception as exc:
@@ -374,11 +374,13 @@ async def tg_poll(bot: ScalpingBot) -> None:
 
     logger.info("Telegram polling started (chat_id=%s)", config.TG_CHAT_ID)
     conflict_count = 0
+    _retry = 0
 
     while True:
         try:
             updates = await _get_updates(_tg_offset, timeout=25)
             conflict_count = 0
+            _retry = 0
             for update in updates:
                 _tg_offset = update["update_id"] + 1
                 try:
@@ -392,11 +394,15 @@ async def tg_poll(bot: ScalpingBot) -> None:
                     logger.warning("tg_poll 409 conflict — another instance active, waiting 60s")
                 await asyncio.sleep(60)
             else:
-                logger.error("tg_poll HTTP %s", exc)
-                await asyncio.sleep(5)
+                delay = 5 * 2 ** min(_retry, 2)  # 5s, 10s, 20s
+                logger.error("tg_poll HTTP %s — retry %d in %ds", exc, _retry + 1, delay)
+                _retry += 1
+                await asyncio.sleep(delay)
         except Exception as exc:
-            logger.error("tg_poll error: %r", exc)
-            await asyncio.sleep(5)
+            delay = 5 * 2 ** min(_retry, 2)  # 5s, 10s, 20s
+            logger.error("tg_poll error (retry %d in %ds): %r", _retry + 1, delay, exc)
+            _retry += 1
+            await asyncio.sleep(delay)
 
 
 async def heartbeat(bot: ScalpingBot) -> None:
