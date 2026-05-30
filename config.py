@@ -5,6 +5,7 @@ load_dotenv()
 
 SYMBOL: str = os.getenv("SYMBOL", "BTCUSDT")
 PAPER_MODE: bool = os.getenv("PAPER_MODE", "false").lower() == "true"
+SHORT_ONLY: bool = os.getenv("SHORT_ONLY", "false").lower() == "true"
 INITIAL_CAPITAL: float = float(os.getenv("INITIAL_CAPITAL", "10000.0"))
 RISK_PCT: float = float(os.getenv("RISK_PCT", "0.01"))  # fraction of balance risked per trade
 

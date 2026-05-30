@@ -294,6 +294,10 @@ class ScalpingBot:
         if signal is None:
             return
 
+        if config.SHORT_ONLY and signal["side"] == "LONG":
+            logger.debug("SHORT_ONLY=True — ignoring LONG signal")
+            return
+
         order = self.risk_engine.build_order(signal, self.broker.balance)
         if order is None:
             return
