@@ -1,8 +1,13 @@
+import decimal
+import hashlib
+import hmac
 import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
+
+import requests
 
 import config
 
@@ -168,3 +173,313 @@ class PaperBroker:
                 return price, "TP"
 
         return None
+
+
+# ---------------------------------------------------------------------------
+# Live broker — real orders via Binance Futures REST API
+# ---------------------------------------------------------------------------
+
+_FAPI_BASE = "https://fapi.binance.com"
+
+
+class LiveBroker:
+    """Sends real orders to Binance Futures. Same public interface as PaperBroker."""
+
+    def __init__(self) -> None:
+        self.balance: float = 0.0
+        self.position: Optional[Position] = None
+        self._bid: Optional[float] = None
+        self._ask: Optional[float] = None
+        self._step_size: float = self._fetch_step_size()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _headers(self) -> dict:
+        return {"X-MBX-APIKEY": config.BINANCE_API_KEY}
+
+    def _sign(self, params: dict) -> dict:
+        p = {**params, "timestamp": int(time.time() * 1000)}
+        qs = "&".join(f"{k}={v}" for k, v in p.items())
+        sig = hmac.new(
+            config.BINANCE_API_SECRET.encode(),
+            qs.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return {**p, "signature": sig}
+
+    def _request(self, method: str, path: str, params: dict) -> dict:
+        signed = self._sign(params)
+        resp = requests.request(
+            method,
+            f"{_FAPI_BASE}{path}",
+            params=signed,
+            headers=self._headers(),
+            timeout=10,
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Binance {method} {path} → HTTP {resp.status_code}: {data}"
+            )
+        return data
+
+    def _fetch_step_size(self) -> float:
+        try:
+            resp = requests.get(f"{_FAPI_BASE}/fapi/v1/exchangeInfo", timeout=10)
+            for sym in resp.json().get("symbols", []):
+                if sym["symbol"] == config.SYMBOL:
+                    for f in sym["filters"]:
+                        if f["filterType"] == "LOT_SIZE":
+                            step = float(f["stepSize"])
+                            logger.info("stepSize for %s: %s", config.SYMBOL, step)
+                            return step
+        except Exception as exc:
+            logger.warning("_fetch_step_size failed: %r — defaulting to 0.001", exc)
+        return 0.001
+
+    def _round_qty(self, qty: float) -> float:
+        step = decimal.Decimal(str(self._step_size))
+        q = decimal.Decimal(str(qty))
+        return float((q // step) * step)
+
+    # ------------------------------------------------------------------
+    # Market data feed
+    # ------------------------------------------------------------------
+
+    def update_book(self, data: dict) -> None:
+        self._bid = float(data["b"])
+        self._ask = float(data["a"])
+
+    # ------------------------------------------------------------------
+    # Position management
+    # ------------------------------------------------------------------
+
+    def open_position(self, order: dict) -> Optional[Position]:
+        if self.position is not None:
+            logger.warning("open_position called while position already open — skipped")
+            return None
+
+        side_map = {"LONG": "BUY", "SHORT": "SELL"}
+        close_side = {"LONG": "SELL", "SHORT": "BUY"}[order["side"]]
+        qty = self._round_qty(order["qty"])
+        if qty <= 0:
+            logger.error("open_position: qty rounds to 0 — skipped")
+            return None
+
+        # 1. MARKET entry order
+        try:
+            entry_resp = self._request("POST", "/fapi/v1/order", {
+                "symbol":   config.SYMBOL,
+                "side":     side_map[order["side"]],
+                "type":     "MARKET",
+                "quantity": qty,
+            })
+            logger.info(
+                "MARKET entry: orderId=%s status=%s avgPrice=%s executedQty=%s",
+                entry_resp.get("orderId"), entry_resp.get("status"),
+                entry_resp.get("avgPrice"), entry_resp.get("executedQty"),
+            )
+        except Exception as exc:
+            logger.error("open_position: entry order failed: %r", exc)
+            return None
+
+        entry_price = float(entry_resp.get("avgPrice") or order["entry_price"])
+        fee_entry = entry_price * qty * config.TAKER_FEE
+
+        # 2. SL: STOP_MARKET with closePosition=true
+        sl_ok = False
+        try:
+            sl_resp = self._request("POST", "/fapi/v1/order", {
+                "symbol":        config.SYMBOL,
+                "side":          close_side,
+                "type":          "STOP_MARKET",
+                "stopPrice":     f"{order['sl']:.2f}",
+                "closePosition": "true",
+            })
+            logger.info(
+                "SL order: orderId=%s status=%s stopPrice=%s",
+                sl_resp.get("orderId"), sl_resp.get("status"), sl_resp.get("stopPrice"),
+            )
+            sl_ok = True
+        except Exception as exc:
+            logger.error("open_position: SL placement failed: %r", exc)
+
+        # 3. TP: TAKE_PROFIT_MARKET with closePosition=true
+        tp_ok = False
+        if sl_ok:
+            try:
+                tp_resp = self._request("POST", "/fapi/v1/order", {
+                    "symbol":        config.SYMBOL,
+                    "side":          close_side,
+                    "type":          "TAKE_PROFIT_MARKET",
+                    "stopPrice":     f"{order['tp']:.2f}",
+                    "closePosition": "true",
+                })
+                logger.info(
+                    "TP order: orderId=%s status=%s stopPrice=%s",
+                    tp_resp.get("orderId"), tp_resp.get("status"), tp_resp.get("stopPrice"),
+                )
+                tp_ok = True
+            except Exception as exc:
+                logger.error("open_position: TP placement failed: %r", exc)
+
+        # 4. Protection orders failed → emergency market close, never leave unprotected
+        if not sl_ok or not tp_ok:
+            logger.error(
+                "open_position: protection orders failed — emergency market close"
+            )
+            try:
+                self._request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": config.SYMBOL})
+            except Exception as exc:
+                logger.warning("emergency cancel failed: %r", exc)
+            try:
+                self._request("POST", "/fapi/v1/order", {
+                    "symbol":     config.SYMBOL,
+                    "side":       close_side,
+                    "type":       "MARKET",
+                    "quantity":   qty,
+                    "reduceOnly": "true",
+                })
+                logger.info("emergency close sent")
+            except Exception as exc:
+                logger.error("emergency close failed: %r", exc)
+            return None
+
+        self.position = Position(
+            side=order["side"],
+            entry_price=entry_price,
+            sl=order["sl"],
+            tp=order["tp"],
+            qty=qty,
+            fee_entry=fee_entry,
+            ema200_at_entry=order.get("ema200", 0.0),
+            rsi_at_entry=order.get("rsi_curr", 0.0),
+            atr_at_entry=order.get("atr", 0.0),
+        )
+        logger.info(
+            "OPEN %s entry=%.2f sl=%.2f tp=%.2f qty=%.6f fee=%.4f balance=%.2f",
+            order["side"], entry_price, order["sl"], order["tp"],
+            qty, fee_entry, self.balance,
+        )
+        return self.position
+
+    def close_position(self, exit_price: float, reason: str) -> Optional[dict]:
+        if self.position is None:
+            return None
+
+        pos = self.position
+        close_side = {"LONG": "SELL", "SHORT": "BUY"}[pos.side]
+
+        # 1. Cancel remaining SL/TP orders
+        try:
+            self._request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": config.SYMBOL})
+            logger.info("close_position: cancelled open orders for %s", config.SYMBOL)
+        except Exception as exc:
+            logger.warning("close_position: cancel orders error: %r", exc)
+
+        # 2. Market close (reduceOnly — safe even if exchange already closed it)
+        actual_exit = exit_price
+        try:
+            close_resp = self._request("POST", "/fapi/v1/order", {
+                "symbol":     config.SYMBOL,
+                "side":       close_side,
+                "type":       "MARKET",
+                "quantity":   pos.qty,
+                "reduceOnly": "true",
+            })
+            logger.info(
+                "MARKET close: orderId=%s status=%s avgPrice=%s",
+                close_resp.get("orderId"), close_resp.get("status"),
+                close_resp.get("avgPrice"),
+            )
+            if close_resp.get("avgPrice"):
+                actual_exit = float(close_resp["avgPrice"])
+        except Exception as exc:
+            # Position may have been closed already by exchange SL/TP — use book price.
+            logger.warning(
+                "close_position: market close error (falling back to book price): %r", exc
+            )
+
+        # 3. PnL from real fill
+        fee_exit = actual_exit * pos.qty * config.TAKER_FEE
+        total_fees = pos.fee_entry + fee_exit
+        if pos.side == "LONG":
+            gross_pnl = (actual_exit - pos.entry_price) * pos.qty
+        else:
+            gross_pnl = (pos.entry_price - actual_exit) * pos.qty
+        net_pnl = gross_pnl - total_fees
+        cost_basis = pos.entry_price * pos.qty
+        pnl_pct = (net_pnl / cost_basis) * 100.0 if cost_basis else 0.0
+
+        self.position = None
+        result = {
+            "side":            pos.side,
+            "entry_price":     pos.entry_price,
+            "exit_price":      actual_exit,
+            "sl":              pos.sl,
+            "tp":              pos.tp,
+            "qty":             pos.qty,
+            "pnl_usd":        round(net_pnl, 6),
+            "pnl_pct":        round(pnl_pct, 4),
+            "exit_reason":    reason,
+            "ema200_at_entry": pos.ema200_at_entry,
+            "rsi_at_entry":   pos.rsi_at_entry,
+            "atr_at_entry":   pos.atr_at_entry,
+            "open_time":      pos.open_time,
+        }
+        logger.info(
+            "CLOSE %s exit=%.2f reason=%s pnl=%.4f USD (%.2f%%) balance=%.2f",
+            pos.side, actual_exit, reason, net_pnl, pnl_pct, self.balance,
+        )
+        return result
+
+    def close_at_market(self, reason: str = "MANUAL") -> Optional[dict]:
+        if self.position is None:
+            return None
+        if self.position.side == "LONG":
+            price = self._bid if self._bid is not None else self.position.entry_price
+        else:
+            price = self._ask if self._ask is not None else self.position.entry_price
+        return self.close_position(price, reason)
+
+    def check_sl_tp(self) -> Optional[tuple[float, str]]:
+        """
+        Same logic as PaperBroker. Exchange SL/TP orders act as a backup when offline.
+        LONGs exit at bid; SHORTs exit at ask.
+        """
+        if self.position is None or self._bid is None or self._ask is None:
+            return None
+        pos = self.position
+        if pos.side == "LONG":
+            price = self._bid
+            if price <= pos.sl:
+                return price, "SL"
+            if price >= pos.tp:
+                return price, "TP"
+        else:
+            price = self._ask
+            if price >= pos.sl:
+                return price, "SL"
+            if price <= pos.tp:
+                return price, "TP"
+        return None
+
+    def save_state(self, path: str) -> None:
+        if self.position is None:
+            return
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(asdict(self.position), fh)
+
+    def restore_state(self, path: str) -> Optional[Position]:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.position = Position(**data)
+            return self.position
+        except FileNotFoundError:
+            return None
+        except Exception as exc:
+            logger.warning("restore_state failed: %r", exc)
+            return None

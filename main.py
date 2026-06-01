@@ -20,7 +20,7 @@ import aiohttp
 import config
 import telegram as tg
 from data_feed import DataFeed
-from execution import PaperBroker
+from execution import LiveBroker, PaperBroker
 from indicators import Indicators
 from risk_engine import RiskEngine
 from signal_engine import SignalEngine
@@ -145,7 +145,7 @@ class ScalpingBot:
         self._state_file = "/opt/bots/scalping-ema200/state.json"
 
         self.indicators = Indicators()
-        self.broker = PaperBroker()
+        self.broker = PaperBroker() if config.PAPER_MODE else LiveBroker()
         self.signal_engine = SignalEngine(self.indicators)
         self.risk_engine = RiskEngine(self.indicators)
         self.journal = TradeJournal()
