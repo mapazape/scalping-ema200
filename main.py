@@ -149,7 +149,7 @@ class ScalpingBot:
         self.signal_engine = SignalEngine(self.indicators)
         self.risk_engine = RiskEngine(self.indicators)
         self.journal = TradeJournal()
-        self.stats = Stats(initial_balance=config.INITIAL_CAPITAL)
+        self.stats = Stats(initial_balance=0.0)
         self._hydrate_stats_from_journal()
 
         self.feed = DataFeed(
@@ -202,8 +202,8 @@ class ScalpingBot:
 
     async def run(self) -> None:
         logger.info(
-            "starting | symbol=%s paper_mode=%s capital=%.2f",
-            config.SYMBOL, config.PAPER_MODE, config.INITIAL_CAPITAL,
+            "starting | symbol=%s paper_mode=%s",
+            config.SYMBOL, config.PAPER_MODE,
         )
         h1, m1 = await self.feed.bootstrap()
         self.indicators.load_bootstrap(h1, m1)
@@ -319,6 +319,7 @@ class ScalpingBot:
             logger.debug("SHORT_ONLY=True — ignoring LONG signal")
             return
 
+        await self._refresh_balance()
         order = self.risk_engine.build_order(signal, self.broker.balance)
         if order is None:
             return

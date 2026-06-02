@@ -304,13 +304,13 @@ def _build_posicion(bot: ScalpingBot) -> str:
     return "\n".join(lines)
 
 
-def _build_config() -> str:
+def _build_config(bot: "ScalpingBot") -> str:
     paper = "✅ PAPER" if config.PAPER_MODE else "🔴 LIVE"
     sep = "━━━━━━━━━━━━━━━"
     lines = [
         f"⚙️ *CONFIG ACTIVA*\n{sep}",
         f"Modo: `{paper}`",
-        f"Capital inicial: `${config.INITIAL_CAPITAL:.0f}`",
+        f"Balance actual: `${bot.broker.balance:.2f}`",
         sep,
         f"RSI Oversold: `{config.RSI_OVERSOLD}`",
         f"RSI Overbought: `{config.RSI_OVERBOUGHT}`",
@@ -384,7 +384,7 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
         await tg_send(_build_ultimo())
 
     elif text.startswith("/config"):
-        await tg_send(_build_config())
+        await tg_send(_build_config(bot))
 
     elif text.startswith("/posicion"):
         await tg_send(_build_posicion(bot))

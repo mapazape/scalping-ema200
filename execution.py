@@ -30,7 +30,7 @@ class Position:
 
 class PaperBroker:
     def __init__(self) -> None:
-        self.balance: float = config.INITIAL_CAPITAL
+        self.balance: float = 0.0
         self.position: Optional[Position] = None
         self._bid: Optional[float] = None
         self._ask: Optional[float] = None
