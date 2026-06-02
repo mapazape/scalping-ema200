@@ -190,7 +190,7 @@ class LiveBroker:
         self.position: Optional[Position] = None
         self._bid: Optional[float] = None
         self._ask: Optional[float] = None
-        self._step_size: float = self._fetch_step_size()
+        self._step_size, self._min_qty = self._fetch_lot_size()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -225,7 +225,7 @@ class LiveBroker:
             )
         return data
 
-    def _fetch_step_size(self) -> float:
+    def _fetch_lot_size(self) -> tuple[float, float]:
         try:
             resp = requests.get(f"{_FAPI_BASE}/fapi/v1/exchangeInfo", timeout=10)
             for sym in resp.json().get("symbols", []):
@@ -233,11 +233,15 @@ class LiveBroker:
                     for f in sym["filters"]:
                         if f["filterType"] == "LOT_SIZE":
                             step = float(f["stepSize"])
-                            logger.info("stepSize for %s: %s", config.SYMBOL, step)
-                            return step
+                            min_qty = float(f["minQty"])
+                            logger.info(
+                                "LOT_SIZE for %s: stepSize=%s minQty=%s",
+                                config.SYMBOL, step, min_qty,
+                            )
+                            return step, min_qty
         except Exception as exc:
-            logger.warning("_fetch_step_size failed: %r — defaulting to 0.001", exc)
-        return 0.001
+            logger.warning("_fetch_lot_size failed: %r — defaulting step=0.001 min=0.001", exc)
+        return 0.001, 0.001
 
     def _round_qty(self, qty: float) -> float:
         step = decimal.Decimal(str(self._step_size))
@@ -265,8 +269,10 @@ class LiveBroker:
         close_side = {"LONG": "SELL", "SHORT": "BUY"}[order["side"]]
         qty = self._round_qty(order["qty"])
         if qty <= 0:
-            logger.error("open_position: qty rounds to 0 — skipped")
-            return None
+            qty = self._min_qty
+            logger.warning(
+                "open_position: qty rounded to 0 — using min_qty=%.6f", qty
+            )
 
         # 1. MARKET entry order
         try:
