@@ -5,8 +5,20 @@ load_dotenv()
 
 SYMBOL: str = os.getenv("SYMBOL", "BTCUSDT")
 PAPER_MODE: bool = os.getenv("PAPER_MODE", "false").lower() == "true"
-SHORT_ONLY: bool = os.getenv("SHORT_ONLY", "false").lower() == "true"
+# SIDE_FILTER controls which signals are acted on: SHORT, LONG, or AUTO (both)
+SIDE_FILTER: str = os.getenv("SIDE_FILTER", "AUTO").upper()
 RISK_PCT: float = float(os.getenv("RISK_PCT", "0.01"))  # fraction of balance risked per trade
+
+# Bot identity for shared state management
+BOT_NAME: str = os.getenv("BOT_NAME", "btc-short")
+STATE_FILE: str = os.getenv("STATE_FILE", "/opt/bots/scalping-ema200/state.json")
+
+# Shared infrastructure files
+CB_FILE: str = "/opt/bots/circuit_breaker.json"
+BOT_STATES_FILE: str = "/opt/bots/bot_states.json"
+
+# Telegram polling: only one instance should poll (set false on bot-2, bot-3)
+TG_POLLING: bool = os.getenv("TG_POLLING", "true").lower() == "true"
 
 RSI_PERIOD: int = 14
 RSI_OVERSOLD: float = 35.0

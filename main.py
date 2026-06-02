@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import os
+import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -142,7 +143,8 @@ class ScalpingBot:
         self.state: State = State.IDLE
         self._cooldown_until: float = 0.0
         self._paused: bool = False
-        self._state_file = "/opt/bots/scalping-ema200/state.json"
+        self._state_file = config.STATE_FILE
+        self._total_balance: float = 0.0  # raw Binance balance before division
 
         self.indicators = Indicators()
         self.broker = PaperBroker() if config.PAPER_MODE else LiveBroker()
@@ -190,15 +192,80 @@ class ScalpingBot:
                 restored.side, restored.entry_price, restored.sl, restored.tp,
             )
 
+    # ------------------------------------------------------------------
+    # Shared bot state helpers
+    # ------------------------------------------------------------------
+
+    def _count_active_bots(self) -> int:
+        """Count running bot instances from shared state file (heartbeat < 120s)."""
+        try:
+            with open(config.BOT_STATES_FILE, encoding="utf-8") as fh:
+                states = json.load(fh)
+            now = time.time()
+            return max(
+                sum(1 for v in states.values() if now - v.get("heartbeat", 0) < 120),
+                1,
+            )
+        except Exception:
+            return 1
+
+    def _write_bot_state(self) -> None:
+        """Write current FSM state to shared bot_states.json atomically."""
+        try:
+            try:
+                with open(config.BOT_STATES_FILE, encoding="utf-8") as fh:
+                    states = json.load(fh)
+            except Exception:
+                states = {}
+
+            pos = self.broker.position
+            states[config.BOT_NAME] = {
+                "state": self.state.name,
+                "side": pos.side if pos else None,
+                "entry_price": pos.entry_price if pos else None,
+                "heartbeat": time.time(),
+                "allocated_balance": self.broker.balance,
+                "total_balance": self._total_balance,
+            }
+
+            dir_path = os.path.dirname(config.BOT_STATES_FILE) or "."
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=dir_path, delete=False, suffix=".tmp", encoding="utf-8"
+            ) as tmp:
+                json.dump(states, tmp)
+                tmp_path = tmp.name
+            os.replace(tmp_path, config.BOT_STATES_FILE)
+        except Exception as exc:
+            logger.warning("_write_bot_state failed: %r", exc)
+
+    def _circuit_breaker_enabled(self) -> bool:
+        """Return True when trading is allowed (circuit breaker not active)."""
+        try:
+            with open(config.CB_FILE, encoding="utf-8") as fh:
+                data = json.load(fh)
+            return bool(data.get("trading_enabled", True))
+        except FileNotFoundError:
+            return True
+        except Exception as exc:
+            logger.warning("circuit breaker check failed: %r", exc)
+            return True
+
     async def _refresh_balance(self) -> None:
         real = await fetch_futures_usdt_balance()
         if real is not None:
-            self.broker.balance = real
-            logger.info("balance refreshed from Binance Futures: %.2f USDT", real)
+            self._total_balance = real
+            active = self._count_active_bots()
+            allocated = real / active
+            self.broker.balance = allocated
+            logger.info(
+                "balance: total=%.2f active_bots=%d allocated=%.2f USDT",
+                real, active, allocated,
+            )
         else:
             logger.warning(
                 "balance refresh unavailable — using current %.2f", self.broker.balance
             )
+        self._write_bot_state()
 
     async def run(self) -> None:
         logger.info(
@@ -219,8 +286,9 @@ class ScalpingBot:
             f"Capital: `${self.broker.balance:.2f}`"
         )
 
-        asyncio.create_task(tg.tg_poll(self), name="tg_poll")
-        asyncio.create_task(tg.heartbeat(self), name="tg_heartbeat")
+        if config.TG_POLLING:
+            asyncio.create_task(tg.tg_poll(self), name="tg_poll")
+            asyncio.create_task(tg.heartbeat(self), name="tg_heartbeat")
         asyncio.create_task(self._log_periodic(), name="log_periodic")
 
         await self.feed.run()
@@ -311,12 +379,19 @@ class ScalpingBot:
             logger.debug("cooldown %.0f s remaining", remaining)
             return
 
+        if not self._circuit_breaker_enabled():
+            logger.debug("circuit breaker active — skipping signal evaluation")
+            return
+
         signal = self.signal_engine.evaluate()
         if signal is None:
             return
 
-        if config.SHORT_ONLY and signal["side"] == "LONG":
-            logger.debug("SHORT_ONLY=True — ignoring LONG signal")
+        if config.SIDE_FILTER == "SHORT" and signal["side"] == "LONG":
+            logger.debug("SIDE_FILTER=SHORT — ignoring LONG signal")
+            return
+        if config.SIDE_FILTER == "LONG" and signal["side"] == "SHORT":
+            logger.debug("SIDE_FILTER=LONG — ignoring SHORT signal")
             return
 
         await self._refresh_balance()
@@ -336,7 +411,7 @@ class ScalpingBot:
             )
 
     async def _log_periodic(self) -> None:
-        """Log key indicators every 60 s."""
+        """Log key indicators every 60 s and refresh shared bot state heartbeat."""
         while True:
             await asyncio.sleep(60)
             try:
@@ -356,6 +431,7 @@ class ScalpingBot:
                     regime,
                     self.state.name,
                 )
+                self._write_bot_state()
             except Exception as exc:
                 logger.warning("_log_periodic error: %r", exc)
 
@@ -365,6 +441,7 @@ class ScalpingBot:
             from_state.name, to_state.name, reason, self.broker.balance,
         )
         self.state = to_state
+        self._write_bot_state()
 
 
 # ------------------------------------------------------------------

@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import requests
@@ -16,6 +16,13 @@ from trade_journal import JOURNAL_DIR
 
 if TYPE_CHECKING:
     from main import ScalpingBot
+
+# Absolute journal dirs for all bots (used by /stat_bots)
+_BOT_DIRS = {
+    "btc-short": "/opt/bots/scalping-ema200",
+    "btc-long":  "/opt/bots/scalping-ema200-long",
+    "eth":       "/opt/bots/scalping-eth",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +311,115 @@ def _build_posicion(bot: ScalpingBot) -> str:
     return "\n".join(lines)
 
 
+def _load_today_trades(journal_dir: str) -> list[dict]:
+    """Read today's trades from a bot's journal directory."""
+    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    path = os.path.join(journal_dir, "journals", f"trades_{today}.jsonl")
+    trades: list[dict] = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    trades.append(json.loads(line))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.warning("_load_today_trades %s: %s", path, exc)
+    return trades
+
+
+def _build_stat_bots(bot: "ScalpingBot") -> str:
+    sep = "━━━━━━━━━━━━━━━"
+    lines = [f"📊 *ESTADO DE BOTS*\n{sep}"]
+
+    # Balance total
+    total_balance = bot._total_balance
+    if total_balance > 0:
+        lines.append(f"💰 Balance Total: `${total_balance:.2f}`")
+    else:
+        lines.append(f"💰 Balance Total: `${bot.broker.balance:.2f}` _(aprox)_")
+
+    # Circuit breaker status
+    try:
+        with open(config.CB_FILE, encoding="utf-8") as fh:
+            cb = json.load(fh)
+        cb_ok = cb.get("trading_enabled", True)
+        cb_reason = cb.get("reason", "")
+        cb_str = "✅ ACTIVO" if cb_ok else f"🛑 BLOQUEADO: `{cb_reason}`"
+    except FileNotFoundError:
+        cb_str = "✅ ACTIVO"
+    except Exception:
+        cb_str = "❓ desconocido"
+    lines.append(f"Circuit Breaker: {cb_str}")
+    lines.append(sep)
+
+    # Per-bot stats
+    try:
+        with open(config.BOT_STATES_FILE, encoding="utf-8") as fh:
+            bot_states = json.load(fh)
+    except Exception:
+        bot_states = {}
+
+    now = time.time()
+    total_pnl = 0.0
+    total_trades = 0
+    total_wins = 0
+
+    bot_labels = {
+        "btc-short": "📕 BTC-SHORT",
+        "btc-long":  "📗 BTC-LONG",
+        "eth":       "🔷 ETH",
+    }
+
+    for bot_id, label in bot_labels.items():
+        state_data = bot_states.get(bot_id, {})
+        heartbeat = state_data.get("heartbeat", 0)
+        alive = (now - heartbeat) < 120
+
+        if not alive:
+            lines.append(f"{label}: ⚠️ _sin heartbeat_")
+            continue
+
+        fsm = state_data.get("state", "IDLE")
+        side = state_data.get("side")
+        entry = state_data.get("entry_price")
+        alloc = state_data.get("allocated_balance", 0.0)
+
+        if fsm == "IN_POSITION" and side and entry:
+            pos_str = f"IN\\-POS `{side}` @ `{entry:.2f}`"
+        else:
+            pos_str = "IDLE"
+
+        # Today's PnL from journal
+        bot_dir = _BOT_DIRS.get(bot_id, "")
+        trades = _load_today_trades(bot_dir)
+        n = len(trades)
+        pnl = sum(t.get("pnl_usd", 0.0) for t in trades)
+        wins = sum(1 for t in trades if t.get("pnl_usd", 0.0) > 0)
+        wr = wins / n * 100 if n else 0.0
+        pnl_emoji = "+" if pnl >= 0 else ""
+
+        total_pnl += pnl
+        total_trades += n
+        total_wins += wins
+
+        lines.append(
+            f"{label} | {pos_str}\n"
+            f"  Capital: `${alloc:.2f}` | PnL: `{pnl_emoji}${pnl:.2f}`\n"
+            f"  Trades: `{n}` | WR: `{wr:.1f}%`"
+        )
+
+    lines.append(sep)
+    global_wr = total_wins / total_trades * 100 if total_trades else 0.0
+    pnl_emoji = "+" if total_pnl >= 0 else ""
+    lines.append(
+        f"PnL Total: `{pnl_emoji}${total_pnl:.2f}` | "
+        f"Trades: `{total_trades}` | WR Global: `{global_wr:.1f}%`"
+    )
+    return "\n".join(lines)
+
+
 def _build_config(bot: "ScalpingBot") -> str:
     paper = "✅ PAPER" if config.PAPER_MODE else "🔴 LIVE"
     sep = "━━━━━━━━━━━━━━━"
@@ -389,6 +505,9 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
     elif text.startswith("/posicion"):
         await tg_send(_build_posicion(bot))
 
+    elif text.startswith("/stat_bots"):
+        await tg_send(_build_stat_bots(bot))
+
     elif text.startswith("/ayuda") or text.startswith("/help") or text.startswith("/start"):
         await tg_send(
             "Comandos disponibles:\n"
@@ -403,6 +522,7 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
             "/cerrar — cerrar posición abierta (MANUAL)\n"
             "/pausa — pausar nuevas entradas\n"
             "/reanudar — reanudar entradas\n"
+            "/stat_bots — estado consolidado de los 3 bots\n"
             "/ayuda — esta ayuda",
             parse_mode="",
         )
