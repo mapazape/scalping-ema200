@@ -335,6 +335,17 @@ class ScalpingBot:
             return
 
         exit_price, reason = trigger
+
+        if reason == "TRAILING_ACTIVATED":
+            self.broker.on_trailing_activated()
+            pos = self.broker.position
+            await tg.tg_send(
+                f"🎯 *Trailing Stop activado*\n"
+                f"`{pos.side}` | entry: `{pos.entry_price:.2f}` | TP @ `{exit_price:.2f}`\n"
+                f"Trailing: `{config.TRAILING_STOP_PCT * 100:.1f}%` desde el extremo"
+            )
+            return
+
         trade = self.broker.close_position(exit_price, reason)
         if trade is None:
             return

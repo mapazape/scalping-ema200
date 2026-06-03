@@ -34,6 +34,9 @@ class PaperBroker:
         self.position: Optional[Position] = None
         self._bid: Optional[float] = None
         self._ask: Optional[float] = None
+        self._trailing_active: bool = False
+        self._trailing_max: float = 0.0
+        self._trailing_min: float = float("inf")
 
     # ------------------------------------------------------------------
     # Market data feed
@@ -68,11 +71,17 @@ class PaperBroker:
             rsi_at_entry=order.get("rsi_curr", 0.0),
             atr_at_entry=order.get("atr", 0.0),
         )
+        self._trailing_active = False
+        self._trailing_max = 0.0
+        self._trailing_min = float("inf")
         logger.info(
             "OPEN %s entry=%.2f sl=%.2f tp=%.2f qty=%.6f fee=%.4f balance=%.2f",
             order["side"], entry, order["sl"], order["tp"], qty, fee_entry, self.balance,
         )
         return self.position
+
+    def on_trailing_activated(self) -> None:
+        pass
 
     def close_position(self, exit_price: float, reason: str) -> Optional[dict]:
         if self.position is None:
@@ -149,10 +158,12 @@ class PaperBroker:
 
     def check_sl_tp(self) -> Optional[tuple[float, str]]:
         """
-        Returns (exit_price, reason) if SL or TP is triggered, else None.
+        Returns (exit_price, reason) or None.
 
-        LONGs exit at bid (we sell into the bid).
-        SHORTs exit at ask (we buy back at the ask).
+        When price first reaches TP, activates trailing and returns
+        (price, "TRAILING_ACTIVATED") — caller must NOT close the position.
+        While trailing is active, tracks the extreme and returns
+        (price, "Trailing Stop") when the 0.5% retracement triggers.
         """
         if self.position is None or self._bid is None or self._ask is None:
             return None
@@ -163,14 +174,42 @@ class PaperBroker:
             price = self._bid
             if price <= pos.sl:
                 return price, "SL"
-            if price >= pos.tp:
-                return price, "TP"
+            if not self._trailing_active:
+                if price >= pos.tp:
+                    self._trailing_active = True
+                    self._trailing_max = price
+                    logger.info("Trailing Stop ACTIVATED | LONG | price=%.2f", price)
+                    return price, "TRAILING_ACTIVATED"
+            else:
+                if price > self._trailing_max:
+                    self._trailing_max = price
+                trail_exit = self._trailing_max * (1 - config.TRAILING_STOP_PCT)
+                if price <= trail_exit:
+                    logger.info(
+                        "Trailing Stop TRIGGERED | LONG | price=%.2f max=%.2f exit=%.2f",
+                        price, self._trailing_max, trail_exit,
+                    )
+                    return price, "Trailing Stop"
         else:
             price = self._ask
             if price >= pos.sl:
                 return price, "SL"
-            if price <= pos.tp:
-                return price, "TP"
+            if not self._trailing_active:
+                if price <= pos.tp:
+                    self._trailing_active = True
+                    self._trailing_min = price
+                    logger.info("Trailing Stop ACTIVATED | SHORT | price=%.2f", price)
+                    return price, "TRAILING_ACTIVATED"
+            else:
+                if price < self._trailing_min:
+                    self._trailing_min = price
+                trail_exit = self._trailing_min * (1 + config.TRAILING_STOP_PCT)
+                if price >= trail_exit:
+                    logger.info(
+                        "Trailing Stop TRIGGERED | SHORT | price=%.2f min=%.2f exit=%.2f",
+                        price, self._trailing_min, trail_exit,
+                    )
+                    return price, "Trailing Stop"
 
         return None
 
@@ -190,6 +229,9 @@ class LiveBroker:
         self.position: Optional[Position] = None
         self._bid: Optional[float] = None
         self._ask: Optional[float] = None
+        self._trailing_active: bool = False
+        self._trailing_max: float = 0.0
+        self._trailing_min: float = float("inf")
         self._step_size, self._min_qty = self._fetch_lot_size()
 
     # ------------------------------------------------------------------
@@ -364,12 +406,38 @@ class LiveBroker:
             rsi_at_entry=order.get("rsi_curr", 0.0),
             atr_at_entry=order.get("atr", 0.0),
         )
+        self._trailing_active = False
+        self._trailing_max = 0.0
+        self._trailing_min = float("inf")
         logger.info(
             "OPEN %s entry=%.2f sl=%.2f tp=%.2f qty=%.6f fee=%.4f balance=%.2f",
             order["side"], entry_price, order["sl"], order["tp"],
             qty, fee_entry, self.balance,
         )
         return self.position
+
+    def on_trailing_activated(self) -> None:
+        """Cancel exchange TP order and re-place SL to keep position protected."""
+        if self.position is None:
+            return
+        close_side = {"LONG": "SELL", "SHORT": "BUY"}[self.position.side]
+        try:
+            self._request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": config.SYMBOL})
+            logger.info("trailing: cancelled all exchange orders")
+        except Exception as exc:
+            logger.warning("trailing: cancel orders error: %r", exc)
+            return
+        try:
+            self._request("POST", "/fapi/v1/order", {
+                "symbol":        config.SYMBOL,
+                "side":          close_side,
+                "type":          "STOP_MARKET",
+                "stopPrice":     f"{self.position.sl:.2f}",
+                "closePosition": "true",
+            })
+            logger.info("trailing: SL re-placed at %.2f", self.position.sl)
+        except Exception as exc:
+            logger.error("trailing: SL re-placement failed: %r", exc)
 
     def close_position(self, exit_price: float, reason: str) -> Optional[dict]:
         if self.position is None:
@@ -452,8 +520,9 @@ class LiveBroker:
 
     def check_sl_tp(self) -> Optional[tuple[float, str]]:
         """
-        Same logic as PaperBroker. Exchange SL/TP orders act as a backup when offline.
-        LONGs exit at bid; SHORTs exit at ask.
+        Same trailing logic as PaperBroker. Exchange SL acts as backup when offline.
+        When TP is reached, returns "TRAILING_ACTIVATED" — caller calls
+        on_trailing_activated() to cancel the exchange TP and re-place SL.
         """
         if self.position is None or self._bid is None or self._ask is None:
             return None
@@ -462,14 +531,42 @@ class LiveBroker:
             price = self._bid
             if price <= pos.sl:
                 return price, "SL"
-            if price >= pos.tp:
-                return price, "TP"
+            if not self._trailing_active:
+                if price >= pos.tp:
+                    self._trailing_active = True
+                    self._trailing_max = price
+                    logger.info("Trailing Stop ACTIVATED | LONG | price=%.2f", price)
+                    return price, "TRAILING_ACTIVATED"
+            else:
+                if price > self._trailing_max:
+                    self._trailing_max = price
+                trail_exit = self._trailing_max * (1 - config.TRAILING_STOP_PCT)
+                if price <= trail_exit:
+                    logger.info(
+                        "Trailing Stop TRIGGERED | LONG | price=%.2f max=%.2f exit=%.2f",
+                        price, self._trailing_max, trail_exit,
+                    )
+                    return price, "Trailing Stop"
         else:
             price = self._ask
             if price >= pos.sl:
                 return price, "SL"
-            if price <= pos.tp:
-                return price, "TP"
+            if not self._trailing_active:
+                if price <= pos.tp:
+                    self._trailing_active = True
+                    self._trailing_min = price
+                    logger.info("Trailing Stop ACTIVATED | SHORT | price=%.2f", price)
+                    return price, "TRAILING_ACTIVATED"
+            else:
+                if price < self._trailing_min:
+                    self._trailing_min = price
+                trail_exit = self._trailing_min * (1 + config.TRAILING_STOP_PCT)
+                if price >= trail_exit:
+                    logger.info(
+                        "Trailing Stop TRIGGERED | SHORT | price=%.2f min=%.2f exit=%.2f",
+                        price, self._trailing_min, trail_exit,
+                    )
+                    return price, "Trailing Stop"
         return None
 
     def save_state(self, path: str) -> None:

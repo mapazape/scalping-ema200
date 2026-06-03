@@ -53,6 +53,7 @@ POSITION_SIZE_PCT: float = float(os.getenv("POSITION_SIZE_PCT", "0.10"))
 MAX_LEVERAGE: float      = float(os.getenv("MAX_LEVERAGE", "1.0"))
 SL_PCT: float            = float(os.getenv("SL_PCT", "0.0050"))
 TP_PCT: float            = float(os.getenv("TP_PCT", "0.0100"))
+TRAILING_STOP_PCT: float = float(os.getenv("TRAILING_STOP_PCT", "0.005"))
 
 # ATR used only as a market-condition filter (not for SL/TP sizing)
 ATR_FILTER_MIN: float    = float(os.getenv("ATR_FILTER_MIN", "10.0"))
