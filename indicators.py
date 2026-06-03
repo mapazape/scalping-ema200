@@ -77,6 +77,16 @@ class Indicators:
         val = ema.iloc[-1]
         return float(val) if pd.notna(val) else None
 
+    def ema50_1h(self) -> Optional[float]:
+        if len(self._h1) < 50:
+            return None
+        series = pd.Series([c["close"] for c in self._h1], dtype=float)
+        ema = ta.ema(series, length=50)
+        if ema is None or ema.empty:
+            return None
+        val = ema.iloc[-1]
+        return float(val) if pd.notna(val) else None
+
     def rsi14_1m(self) -> Optional[tuple[float, float]]:
         """Return (rsi_prev, rsi_curr) from the last two closed 1m candles."""
         if len(self._m1) < config.RSI_PERIOD + 2:
