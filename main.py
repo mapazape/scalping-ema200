@@ -325,6 +325,7 @@ class ScalpingBot:
             asyncio.create_task(tg.tg_poll(self), name="tg_poll")
             asyncio.create_task(tg.heartbeat(self), name="tg_heartbeat")
         asyncio.create_task(self._log_periodic(), name="log_periodic")
+        asyncio.create_task(self._poll_close_signal(), name="poll_close_signal")
 
         await self.feed.run()
 
@@ -455,6 +456,38 @@ class ScalpingBot:
                 f"@ `{order['entry_price']:.2f}` | SL: `{order['sl']:.2f}` | TP: `{order['tp']:.2f}`\n"
                 f"Notional: `${order['notional']:.2f}` | Qty: `{order['qty']:.6f}`"
             )
+
+    async def _poll_close_signal(self) -> None:
+        """Check /opt/bots/close_signal_{bot}.json every 5 s and close if found."""
+        signal_path = os.path.join("/opt/bots", f"close_signal_{config.BOT_NAME}.json")
+        while True:
+            await asyncio.sleep(5)
+            if not os.path.exists(signal_path):
+                continue
+            try:
+                os.unlink(signal_path)
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                logger.warning("_poll_close_signal unlink error: %r", exc)
+                continue
+            logger.info("close signal received for %s", config.BOT_NAME)
+            if self.state is State.IN_POSITION:
+                trade = await self.manual_close()
+                if trade is not None:
+                    await tg.tg_send(
+                        f"🚨 *Cierre por señal remota* — `{config.BOT_NAME}`\n"
+                        f"PnL: `${trade['pnl_usd']:+.4f}` ({trade['pnl_pct']:+.2f}%)\n"
+                        f"Balance: `${self.broker.balance:.2f}`"
+                    )
+                else:
+                    await tg.tg_send(
+                        f"ℹ️ Señal de cierre recibida (`{config.BOT_NAME}`) — sin posición abierta."
+                    )
+            else:
+                await tg.tg_send(
+                    f"ℹ️ Señal de cierre recibida (`{config.BOT_NAME}`) — bot en IDLE."
+                )
 
     async def _log_periodic(self) -> None:
         """Log key indicators every 60 s and refresh shared bot state heartbeat."""
