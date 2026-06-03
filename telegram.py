@@ -24,6 +24,9 @@ _BOT_DIRS = {
     "eth":       "/opt/bots/scalping-eth",
 }
 
+_CLOSE_SIGNAL_DIR = "/opt/bots"
+_BOT_CLOSE_KEYS = ("btc-short", "btc-long", "eth")
+
 logger = logging.getLogger(__name__)
 
 _API = "https://api.telegram.org/bot{token}/{method}"
@@ -448,6 +451,13 @@ def _build_stat_bots(bot: "ScalpingBot") -> str:
     return "\n".join(lines)
 
 
+def _send_close_signal(bot_id: str) -> None:
+    """Write close_signal_{bot_id}.json so the target bot closes its position."""
+    path = os.path.join(_CLOSE_SIGNAL_DIR, f"close_signal_{bot_id}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"close": True, "ts": datetime.now(timezone.utc).isoformat()}, fh)
+
+
 def _build_config(bot: "ScalpingBot") -> str:
     paper = "✅ PAPER" if config.PAPER_MODE else "🔴 LIVE"
     sep = "━━━━━━━━━━━━━━━"
@@ -487,15 +497,33 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
         await tg_send(_build_resumen(bot))
 
     elif text.startswith("/cerrar"):
-        trade = await bot.manual_close()
-        if trade is not None:
-            await tg_send(
-                f"✅ Posición cerrada manualmente\n"
-                f"PnL: `${trade['pnl_usd']:+.4f}` ({trade['pnl_pct']:+.2f}%)\n"
-                f"Balance: `${bot.broker.balance:.2f}`"
-            )
+        parts = text.split()
+        arg = parts[1].lower() if len(parts) > 1 else ""
+
+        if arg in _BOT_CLOSE_KEYS or arg == "all":
+            targets = list(_BOT_CLOSE_KEYS) if arg == "all" else [arg]
+            sent: list[str] = []
+            errors: list[str] = []
+            for bot_id in targets:
+                try:
+                    _send_close_signal(bot_id)
+                    sent.append(bot_id)
+                except Exception as exc:
+                    errors.append(f"{bot_id}: {exc}")
+            msg = f"🚨 Señal de cierre enviada a: `{', '.join(sent)}`"
+            if errors:
+                msg += f"\n⚠️ Errores: {'; '.join(errors)}"
+            await tg_send(msg)
         else:
-            await tg_send("ℹ️ No hay posición abierta.")
+            trade = await bot.manual_close()
+            if trade is not None:
+                await tg_send(
+                    f"✅ Posición cerrada manualmente\n"
+                    f"PnL: `${trade['pnl_usd']:+.4f}` ({trade['pnl_pct']:+.2f}%)\n"
+                    f"Balance: `${bot.broker.balance:.2f}`"
+                )
+            else:
+                await tg_send("ℹ️ No hay posición abierta.")
 
     elif text.startswith("/pausa"):
         bot._paused = True
@@ -539,18 +567,24 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
     elif text.startswith("/ayuda") or text.startswith("/help") or text.startswith("/start"):
         await tg_send(
             "Comandos disponibles:\n"
-            "/status — estado actual (FSM, EMA200, RSI, cooldown)\n"
-            "/resumen — resumen completo con métricas\n"
-            "/stats — WR%, payoff, BE_WR, net PnL (JSONL)\n"
+            "\n"
+            "📊 Información\n"
+            "/posicion — vista consolidada 3 bots (EMAs, RSI, trailing)\n"
+            "/stat_bots — PnL diario, trades y WR de los 3 bots\n"
+            "/status — estado del bot actual (FSM, EMA200, RSI, cooldown)\n"
+            "/resumen — métricas completas del bot actual\n"
+            "/stats — WR%, payoff, BE_WR, net PnL global (JSONL)\n"
             "/lado — desglose LONG vs SHORT\n"
             "/ultimo — detalle del último trade cerrado\n"
-            "/posicion — estado FSM, side, entry/SL/TP, PnL no realizado\n"
             "/config — parámetros activos del bot\n"
             "/down_trades — descargar historial de trades JSON\n"
-            "/cerrar — cerrar posición abierta (MANUAL)\n"
+            "\n"
+            "🎮 Control\n"
+            "/cerrar — cierra posición del bot actual (MANUAL)\n"
+            "/cerrar btc-short|btc-long|eth|all — envía señal de cierre a bot(s) específico(s)\n"
             "/pausa — pausar nuevas entradas\n"
             "/reanudar — reanudar entradas\n"
-            "/stat_bots — estado consolidado de los 3 bots\n"
+            "\n"
             "/ayuda — esta ayuda",
             parse_mode="",
         )
