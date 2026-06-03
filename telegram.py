@@ -458,20 +458,75 @@ def _send_close_signal(bot_id: str) -> None:
         json.dump({"close": True, "ts": datetime.now(timezone.utc).isoformat()}, fh)
 
 
+def _parse_env_file(path: str) -> dict:
+    """Parse key=value lines from a .env file; ignores comments and blank lines."""
+    result: dict = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                result[key.strip()] = val.strip()
+    except Exception:
+        pass
+    return result
+
+
+_SIDE_ICONS = {"AUTO": "🔄 AUTO", "LONG": "📗 LONG", "SHORT": "📕 SHORT"}
+_BOT_LABELS = {
+    "btc-short": "📕 BTC-SHORT",
+    "btc-long":  "📗 BTC-LONG",
+    "eth":       "🔷 ETH",
+}
+
+
 def _build_config(bot: "ScalpingBot") -> str:
-    paper = "✅ PAPER" if config.PAPER_MODE else "🔴 LIVE"
     sep = "━━━━━━━━━━━━━━━"
-    lines = [
-        f"⚙️ *CONFIG ACTIVA*\n{sep}",
-        f"Modo: `{paper}`",
-        f"Balance actual: `${bot.broker.balance:.2f}`",
-        sep,
-        f"RSI Oversold: `{config.RSI_OVERSOLD}`",
-        f"RSI Overbought: `{config.RSI_OVERBOUGHT}`",
-        f"SL: `{config.SL_PCT * 100:.2f}%` | TP: `{config.TP_PCT * 100:.2f}%`",
-        f"Pos. Size: `{config.POSITION_SIZE_PCT * 100:.1f}%`",
-        f"Cooldown: `{config.COOLDOWN_SECONDS}s`",
-    ]
+
+    # Load bot_states.json once for EMA50 values
+    try:
+        with open(config.BOT_STATES_FILE, encoding="utf-8") as fh:
+            bot_states = json.load(fh)
+    except Exception:
+        bot_states = {}
+
+    # Shared params (same binary for all bots, read from live config module)
+    shared = (
+        f"SL: `{config.SL_PCT * 100:.2f}%` | TP: `{config.TP_PCT * 100:.2f}%`"
+        f" | Trailing: `{config.TRAILING_STOP_PCT * 100:.2f}%`\n"
+        f"RSI: oversold `{config.RSI_OVERSOLD}` / overbought `{config.RSI_OVERBOUGHT}`\n"
+        f"Pos. Size: `{config.POSITION_SIZE_PCT * 100:.1f}%` | Cooldown: `{config.COOLDOWN_SECONDS}s`\n"
+        f"CB Reversal: `{config.REVERSAL_THRESHOLD * 100:.1f}%`"
+    )
+
+    lines = [f"⚙️ *CONFIG — 3 BOTS*\n{sep}"]
+
+    for bot_id, label in _BOT_LABELS.items():
+        env = _parse_env_file(os.path.join(_BOT_DIRS[bot_id], ".env"))
+
+        bot_name   = env.get("BOT_NAME", bot_id)
+        symbol     = env.get("SYMBOL", "?")
+        side_raw   = env.get("SIDE_FILTER", "AUTO").upper()
+        paper_mode = env.get("PAPER_MODE", "false").lower() == "true"
+        mode_str   = "PAPER" if paper_mode else "LIVE"
+
+        side_str = _SIDE_ICONS.get(side_raw, side_raw)
+        paper_icon = "✅" if paper_mode else "🔴"
+
+        state  = bot_states.get(bot_id, {})
+        ema50  = state.get("ema50")
+        ema50_str = f"{ema50:,.2f}" if ema50 is not None else "N/A"
+
+        lines += [
+            "",
+            f"{label}  `{bot_name}` — {symbol}",
+            f"  Modo: {paper_icon} `{mode_str}` | Side: {side_str}",
+            f"  EMA50: `{ema50_str}`",
+        ]
+
+    lines += ["", sep, shared]
     return "\n".join(lines)
 
 
