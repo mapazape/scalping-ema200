@@ -219,13 +219,48 @@ class ScalpingBot:
                 states = {}
 
             pos = self.broker.position
+            price  = self.indicators.last_close_1m()
+            ema200 = self.indicators.ema200_1h()
+            ema50  = self.indicators.ema50_1h()
+            rsi_pair = self.indicators.rsi14_1m()
+            rsi    = rsi_pair[1] if rsi_pair else None
+            regime = None
+            if price is not None and ema200 is not None:
+                regime = "BULL" if price > ema200 else "BEAR"
+
+            unrealized_pnl = None
+            if pos is not None and price is not None:
+                gross = (
+                    (price - pos.entry_price) * pos.qty if pos.side == "LONG"
+                    else (pos.entry_price - price) * pos.qty
+                )
+                fee_exit = price * pos.qty * config.TAKER_FEE
+                unrealized_pnl = round(gross - fee_exit, 4)
+
+            trailing_active = self.broker._trailing_active
+            trailing_max = self.broker._trailing_max if trailing_active else None
+            raw_min = self.broker._trailing_min
+            trailing_min = raw_min if (trailing_active and raw_min != float("inf")) else None
+
             states[config.BOT_NAME] = {
-                "state": self.state.name,
-                "side": pos.side if pos else None,
-                "entry_price": pos.entry_price if pos else None,
-                "heartbeat": time.time(),
+                "state":             self.state.name,
+                "side":              pos.side if pos else None,
+                "entry_price":       pos.entry_price if pos else None,
+                "sl":                pos.sl if pos else None,
+                "tp":                pos.tp if pos else None,
+                "qty":               pos.qty if pos else None,
+                "heartbeat":         time.time(),
                 "allocated_balance": self.broker.balance,
-                "total_balance": self._total_balance,
+                "total_balance":     self._total_balance,
+                "price":             price,
+                "ema200":            ema200,
+                "ema50":             ema50,
+                "rsi":               rsi,
+                "regime":            regime,
+                "trailing_active":   trailing_active,
+                "trailing_max":      trailing_max,
+                "trailing_min":      trailing_min,
+                "unrealized_pnl":    unrealized_pnl,
             }
 
             dir_path = os.path.dirname(config.BOT_STATES_FILE) or "."

@@ -261,53 +261,81 @@ def _build_ultimo() -> str:
     return "\n".join(lines)
 
 
-def _build_posicion(bot: ScalpingBot) -> str:
-    from execution import Position  # noqa: F401 — type hint only
-    pos = bot.broker.position
-    balance = bot.broker.balance
+def _build_posicion(bot: "ScalpingBot") -> str:
     sep = "━━━━━━━━━━━━━━━"
+    lines = [f"📍 *POSICIÓN — 3 BOTS*\n{sep}"]
 
-    lines = [
-        f"📍 *POSICIÓN*\n{sep}",
-        f"Estado FSM: `{bot.state.name}`",
-        f"Balance: `${balance:.2f}`",
-    ]
+    try:
+        with open(config.BOT_STATES_FILE, encoding="utf-8") as fh:
+            bot_states = json.load(fh)
+    except Exception as exc:
+        return f"📍 *POSICIÓN*\n⚠️ Error leyendo estados: {exc}"
 
-    if pos is None:
-        lines.append(f"\n_Sin posición abierta._")
-        return "\n".join(lines)
+    now = time.time()
+    bot_labels = {
+        "btc-short": "📕 BTC\\-SHORT",
+        "btc-long":  "📗 BTC\\-LONG",
+        "eth":       "🔷 ETH",
+    }
 
-    current_price = bot.broker._bid if pos.side == "LONG" else bot.broker._ask
+    for bot_id, label in bot_labels.items():
+        data = bot_states.get(bot_id, {})
+        hb = data.get("heartbeat", 0)
+        alive = (now - hb) < 120
 
-    if current_price is not None:
-        if pos.side == "LONG":
-            gross = (current_price - pos.entry_price) * pos.qty
-        else:
-            gross = (pos.entry_price - current_price) * pos.qty
-        fee_exit = current_price * pos.qty * config.TAKER_FEE
-        unreal = gross - fee_exit
-        cost_basis = pos.entry_price * pos.qty
-        unreal_pct = (unreal / cost_basis * 100.0) if cost_basis else 0.0
-        pnl_str = f"`${unreal:+.4f}` ({unreal_pct:+.2f}%)"
-        price_str = f"`${current_price:.2f}`"
-    else:
-        pnl_str = "`N/A`"
-        price_str = "`N/A`"
+        lines.append("")
+        if not alive:
+            lines.append(f"{label}: ⚠️ _sin heartbeat_")
+            continue
 
-    secs = int(time.time() - pos.open_time)
-    dur_str = f"{secs // 60}m {secs % 60}s"
-    side_emoji = "📗" if pos.side == "LONG" else "📕"
+        fsm     = data.get("state", "IDLE")
+        price   = data.get("price")
+        ema50   = data.get("ema50")
+        ema200  = data.get("ema200")
+        rsi     = data.get("rsi")
+        regime  = data.get("regime") or "N/A"
+        alloc   = data.get("allocated_balance", 0.0)
 
-    lines += [
-        sep,
-        f"{side_emoji} Side: `{pos.side}`",
-        f"Entry: `${pos.entry_price:.2f}`",
-        f"SL: `${pos.sl:.2f}`",
-        f"TP: `${pos.tp:.2f}`",
-        f"Precio actual: {price_str}",
-        f"PnL no realizado: {pnl_str}",
-        f"Duración: `{dur_str}`",
-    ]
+        regime_emoji = "🟢" if regime == "BULL" else "🔴"
+        fmt = lambda v, d=2: f"`{v:.{d}f}`" if v is not None else "`N/A`"
+
+        lines += [
+            f"{label} | {regime_emoji} `{regime}` | FSM: `{fsm}`",
+            f"  Precio: {fmt(price)} | Capital: `${alloc:.2f}`",
+            f"  EMA50: {fmt(ema50)} | EMA200: {fmt(ema200)} | RSI: {fmt(rsi)}",
+        ]
+
+        if fsm == "IN_POSITION":
+            side      = data.get("side", "")
+            entry     = data.get("entry_price")
+            sl        = data.get("sl")
+            tp        = data.get("tp")
+            unrealized = data.get("unrealized_pnl")
+            t_active  = data.get("trailing_active", False)
+            t_max     = data.get("trailing_max")
+            t_min     = data.get("trailing_min")
+
+            side_emoji = "📗" if side == "LONG" else "📕"
+            pnl_emoji  = ("+" if (unrealized or 0) >= 0 else "")
+            unreal_str = f"`{pnl_emoji}${unrealized:.4f}`" if unrealized is not None else "`N/A`"
+
+            lines += [
+                f"  {side_emoji} `{side}` | Entry: {fmt(entry)} | SL: {fmt(sl)} | TP: {fmt(tp)}",
+                f"  PnL no realizado: {unreal_str}",
+            ]
+
+            if t_active:
+                if side == "LONG" and t_max is not None:
+                    trail_exit = t_max * (1 - config.TRAILING_STOP_PCT)
+                    lines.append(
+                        f"  🎯 Trailing activo | máx: `{t_max:.2f}` | exit si ≤ `{trail_exit:.2f}`"
+                    )
+                elif side == "SHORT" and t_min is not None:
+                    trail_exit = t_min * (1 + config.TRAILING_STOP_PCT)
+                    lines.append(
+                        f"  🎯 Trailing activo | mín: `{t_min:.2f}` | exit si ≥ `{trail_exit:.2f}`"
+                    )
+
     return "\n".join(lines)
 
 
