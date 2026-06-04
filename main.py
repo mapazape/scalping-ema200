@@ -403,9 +403,8 @@ class ScalpingBot:
             f"Balance: `${self.broker.balance:.2f}`"
         )
 
-        if trade["pnl_usd"] < 0:
-            self._cooldown_until = time.monotonic() + config.COOLDOWN_SECONDS
-            logger.info("loss — cooldown %.0f s", config.COOLDOWN_SECONDS)
+        self._cooldown_until = time.monotonic() + config.COOLDOWN_SECONDS
+        logger.info("cooldown %.0f s after close", config.COOLDOWN_SECONDS)
 
         self._transition(State.IN_POSITION, State.IDLE, reason=f"exit:{reason}")
 

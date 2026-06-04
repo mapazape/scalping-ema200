@@ -30,7 +30,7 @@ ATR_MULT_TP: float = 3.0   # ATR_MULT_TP / ATR_MULT_SL = 2.0 payoff
 
 PAYOFF_MIN: float = 1.9    # reject signal if realized payoff < this
 TAKER_FEE: float = 0.0004  # 0.04%
-COOLDOWN_SECONDS: int = 300  # 5-minute cooldown after a losing trade
+COOLDOWN_SECONDS: int = 300  # cooldown after any closed trade
 
 # Indicator buffer capacities
 H1_BUFFER_SIZE: int = 250
