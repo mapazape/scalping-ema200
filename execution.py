@@ -404,8 +404,9 @@ class LiveBroker:
                 close_resp.get("orderId"), close_resp.get("status"),
                 close_resp.get("avgPrice"),
             )
-            if close_resp.get("avgPrice"):
-                actual_exit = float(close_resp["avgPrice"])
+            avg = float(close_resp.get("avgPrice") or 0)
+            if avg > 0:
+                actual_exit = avg
         except Exception as exc:
             logger.warning(
                 "close_position: market close error (falling back to book price): %r", exc
