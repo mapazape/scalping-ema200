@@ -336,15 +336,16 @@ class LiveBroker:
         entry_price = float(entry_resp.get("avgPrice") or order["entry_price"])
         fee_entry = entry_price * qty * config.TAKER_FEE
 
-        # 2. SL: STOP_MARKET with closePosition=true
+        # 2. SL: STOP_MARKET with explicit quantity (closePosition triggers -4120 on some accounts)
         sl_ok = False
         try:
             sl_resp = self._request("POST", "/fapi/v1/order", {
-                "symbol":        config.SYMBOL,
-                "side":          close_side,
-                "type":          "STOP_MARKET",
-                "stopPrice":     f"{order['sl']:.2f}",
-                "closePosition": "true",
+                "symbol":     config.SYMBOL,
+                "side":       close_side,
+                "type":       "STOP_MARKET",
+                "stopPrice":  f"{order['sl']:.2f}",
+                "quantity":   qty,
+                "reduceOnly": "true",
             })
             logger.info(
                 "SL order: orderId=%s status=%s stopPrice=%s",
@@ -429,11 +430,12 @@ class LiveBroker:
             return
         try:
             self._request("POST", "/fapi/v1/order", {
-                "symbol":        config.SYMBOL,
-                "side":          close_side,
-                "type":          "STOP_MARKET",
-                "stopPrice":     f"{self.position.sl:.2f}",
-                "closePosition": "true",
+                "symbol":     config.SYMBOL,
+                "side":       close_side,
+                "type":       "STOP_MARKET",
+                "stopPrice":  f"{self.position.sl:.2f}",
+                "quantity":   self.position.qty,
+                "reduceOnly": "true",
             })
             logger.info("trailing: SL re-placed at %.2f", self.position.sl)
         except Exception as exc:
