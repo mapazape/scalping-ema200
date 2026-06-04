@@ -308,7 +308,6 @@ class LiveBroker:
             return None
 
         side_map = {"LONG": "BUY", "SHORT": "SELL"}
-        close_side = {"LONG": "SELL", "SHORT": "BUY"}[order["side"]]
         qty = self._round_qty(order["qty"])
         if qty <= 0:
             qty = self._min_qty
@@ -336,66 +335,7 @@ class LiveBroker:
         entry_price = float(entry_resp.get("avgPrice") or order["entry_price"])
         fee_entry = entry_price * qty * config.TAKER_FEE
 
-        # 2. SL: STOP_MARKET with explicit quantity (closePosition triggers -4120 on some accounts)
-        sl_ok = False
-        try:
-            sl_resp = self._request("POST", "/fapi/v1/order", {
-                "symbol":     config.SYMBOL,
-                "side":       close_side,
-                "type":       "STOP_MARKET",
-                "stopPrice":  f"{order['sl']:.2f}",
-                "quantity":   qty,
-                "reduceOnly": "true",
-            })
-            logger.info(
-                "SL order: orderId=%s status=%s stopPrice=%s",
-                sl_resp.get("orderId"), sl_resp.get("status"), sl_resp.get("stopPrice"),
-            )
-            sl_ok = True
-        except Exception as exc:
-            logger.error("open_position: SL placement failed: %r", exc)
-
-        # 3. TP: TAKE_PROFIT_MARKET with closePosition=true
-        tp_ok = False
-        if sl_ok:
-            try:
-                tp_resp = self._request("POST", "/fapi/v1/order", {
-                    "symbol":        config.SYMBOL,
-                    "side":          close_side,
-                    "type":          "TAKE_PROFIT_MARKET",
-                    "stopPrice":     f"{order['tp']:.2f}",
-                    "closePosition": "true",
-                })
-                logger.info(
-                    "TP order: orderId=%s status=%s stopPrice=%s",
-                    tp_resp.get("orderId"), tp_resp.get("status"), tp_resp.get("stopPrice"),
-                )
-                tp_ok = True
-            except Exception as exc:
-                logger.error("open_position: TP placement failed: %r", exc)
-
-        # 4. Protection orders failed → emergency market close, never leave unprotected
-        if not sl_ok or not tp_ok:
-            logger.error(
-                "open_position: protection orders failed — emergency market close"
-            )
-            try:
-                self._request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": config.SYMBOL})
-            except Exception as exc:
-                logger.warning("emergency cancel failed: %r", exc)
-            try:
-                self._request("POST", "/fapi/v1/order", {
-                    "symbol":     config.SYMBOL,
-                    "side":       close_side,
-                    "type":       "MARKET",
-                    "quantity":   qty,
-                    "reduceOnly": "true",
-                })
-                logger.info("emergency close sent")
-            except Exception as exc:
-                logger.error("emergency close failed: %r", exc)
-            return None
-
+        # SL/TP handled entirely in software via check_sl_tp() — no exchange conditional orders
         self.position = Position(
             side=order["side"],
             entry_price=entry_price,
@@ -418,28 +358,8 @@ class LiveBroker:
         return self.position
 
     def on_trailing_activated(self) -> None:
-        """Cancel exchange TP order and re-place SL to keep position protected."""
-        if self.position is None:
-            return
-        close_side = {"LONG": "SELL", "SHORT": "BUY"}[self.position.side]
-        try:
-            self._request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": config.SYMBOL})
-            logger.info("trailing: cancelled all exchange orders")
-        except Exception as exc:
-            logger.warning("trailing: cancel orders error: %r", exc)
-            return
-        try:
-            self._request("POST", "/fapi/v1/order", {
-                "symbol":     config.SYMBOL,
-                "side":       close_side,
-                "type":       "STOP_MARKET",
-                "stopPrice":  f"{self.position.sl:.2f}",
-                "quantity":   self.position.qty,
-                "reduceOnly": "true",
-            })
-            logger.info("trailing: SL re-placed at %.2f", self.position.sl)
-        except Exception as exc:
-            logger.error("trailing: SL re-placement failed: %r", exc)
+        """No-op: trailing stop is handled entirely in software via check_sl_tp()."""
+        logger.info("trailing: activated — software loop handles exit")
 
     def close_position(self, exit_price: float, reason: str) -> Optional[dict]:
         if self.position is None:
@@ -448,14 +368,7 @@ class LiveBroker:
         pos = self.position
         close_side = {"LONG": "SELL", "SHORT": "BUY"}[pos.side]
 
-        # 1. Cancel remaining SL/TP orders
-        try:
-            self._request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": config.SYMBOL})
-            logger.info("close_position: cancelled open orders for %s", config.SYMBOL)
-        except Exception as exc:
-            logger.warning("close_position: cancel orders error: %r", exc)
-
-        # 2. Market close (reduceOnly — safe even if exchange already closed it)
+        # Market close (reduceOnly)
         actual_exit = exit_price
         try:
             close_resp = self._request("POST", "/fapi/v1/order", {
@@ -473,12 +386,11 @@ class LiveBroker:
             if close_resp.get("avgPrice"):
                 actual_exit = float(close_resp["avgPrice"])
         except Exception as exc:
-            # Position may have been closed already by exchange SL/TP — use book price.
             logger.warning(
                 "close_position: market close error (falling back to book price): %r", exc
             )
 
-        # 3. PnL from real fill
+        # PnL from real fill
         fee_exit = actual_exit * pos.qty * config.TAKER_FEE
         total_fees = pos.fee_entry + fee_exit
         if pos.side == "LONG":
@@ -522,9 +434,9 @@ class LiveBroker:
 
     def check_sl_tp(self) -> Optional[tuple[float, str]]:
         """
-        Same trailing logic as PaperBroker. Exchange SL acts as backup when offline.
-        When TP is reached, returns "TRAILING_ACTIVATED" — caller calls
-        on_trailing_activated() to cancel the exchange TP and re-place SL.
+        Software SL/TP/trailing — called on every bookTicker tick.
+        Returns (exit_price, reason) or None.
+        "TRAILING_ACTIVATED" → caller calls on_trailing_activated(); position stays open.
         """
         if self.position is None or self._bid is None or self._ask is None:
             return None
