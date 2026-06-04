@@ -332,7 +332,28 @@ class LiveBroker:
             logger.error("open_position: entry order failed: %r", exc)
             return None
 
-        entry_price = float(entry_resp.get("avgPrice") or order["entry_price"])
+        # Poll until FILLED (up to 5 × 0.5 s) to get the real avgPrice
+        fill_resp = entry_resp
+        if fill_resp.get("status") != "FILLED":
+            order_id = entry_resp.get("orderId")
+            for attempt in range(5):
+                time.sleep(0.5)
+                try:
+                    fill_resp = self._request("GET", "/fapi/v1/order", {
+                        "symbol":  config.SYMBOL,
+                        "orderId": order_id,
+                    })
+                    if fill_resp.get("status") == "FILLED":
+                        break
+                except Exception as exc:
+                    logger.warning("open_position: fill poll attempt %d failed: %r", attempt + 1, exc)
+            else:
+                logger.warning(
+                    "open_position: order %s not FILLED after 2.5s — using estimated price", order_id
+                )
+
+        raw_avg = fill_resp.get("avgPrice", "0")
+        entry_price = float(raw_avg) if float(raw_avg) > 0 else float(order["entry_price"])
         fee_entry = entry_price * qty * config.TAKER_FEE
 
         # SL/TP handled entirely in software via check_sl_tp() — no exchange conditional orders
