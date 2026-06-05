@@ -382,6 +382,22 @@ class LiveBroker:
         """No-op: trailing stop is handled entirely in software via check_sl_tp()."""
         logger.info("trailing: activated — software loop handles exit")
 
+    def _fetch_trade_fee(self, order_id: int) -> float:
+        """Return total USDT commission for a given orderId via /fapi/v1/userTrades."""
+        try:
+            trades = self._request("GET", "/fapi/v1/userTrades", {
+                "symbol":  config.SYMBOL,
+                "orderId": order_id,
+            })
+            return sum(
+                float(t.get("commission", 0))
+                for t in trades
+                if t.get("commissionAsset") == "USDT"
+            )
+        except Exception as exc:
+            logger.warning("_fetch_trade_fee orderId=%s failed: %r", order_id, exc)
+            return 0.0
+
     def close_position(self, exit_price: float, reason: str) -> Optional[dict]:
         if self.position is None:
             return None
@@ -391,6 +407,7 @@ class LiveBroker:
 
         # Market close (reduceOnly)
         actual_exit = exit_price
+        close_order_id = None
         try:
             close_resp = self._request("POST", "/fapi/v1/order", {
                 "symbol":     config.SYMBOL,
@@ -399,9 +416,10 @@ class LiveBroker:
                 "quantity":   pos.qty,
                 "reduceOnly": "true",
             })
+            close_order_id = close_resp.get("orderId")
             logger.info(
                 "MARKET close: orderId=%s status=%s avgPrice=%s",
-                close_resp.get("orderId"), close_resp.get("status"),
+                close_order_id, close_resp.get("status"),
                 close_resp.get("avgPrice"),
             )
             avg = float(close_resp.get("avgPrice") or 0)
@@ -412,9 +430,15 @@ class LiveBroker:
                 "close_position: market close error (falling back to book price): %r", exc
             )
 
-        # PnL from real fill
-        fee_exit = actual_exit * pos.qty * config.TAKER_FEE
+        # Real exit fee from exchange; fall back to estimate if unavailable
+        if close_order_id:
+            real_fee_exit = self._fetch_trade_fee(close_order_id)
+            fee_exit = real_fee_exit if real_fee_exit > 0 else actual_exit * pos.qty * config.TAKER_FEE
+        else:
+            fee_exit = actual_exit * pos.qty * config.TAKER_FEE
         total_fees = pos.fee_entry + fee_exit
+        fee_usd = round(total_fees, 6)
+
         if pos.side == "LONG":
             gross_pnl = (actual_exit - pos.entry_price) * pos.qty
         else:
@@ -431,6 +455,7 @@ class LiveBroker:
             "sl":              pos.sl,
             "tp":              pos.tp,
             "qty":             pos.qty,
+            "fee_usd":         fee_usd,
             "pnl_usd":        round(net_pnl, 6),
             "pnl_pct":        round(pnl_pct, 4),
             "exit_reason":    reason,

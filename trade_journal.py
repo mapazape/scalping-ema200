@@ -26,6 +26,7 @@ class TradeJournal:
             "sl":               trade.get("sl"),
             "tp":               trade.get("tp"),
             "exit_price":       trade.get("exit_price"),
+            "fee_usd":         trade.get("fee_usd"),
             "pnl_usd":         trade.get("pnl_usd"),
             "pnl_pct":         trade.get("pnl_pct"),
             "exit_reason":     trade.get("exit_reason"),
