@@ -503,11 +503,16 @@ async def _build_posicion(bot: "ScalpingBot") -> str:
     lines.append(f"💰 Balance real: `{bal_str}`")
     lines.append("📊 PnL por bot (trades reales):")
     for bid, label in bot_footer_labels.items():
-        trades  = bot_valid[bid]
-        pnl_bot = sum(t.get("pnl_usd", 0.0) for t in trades)
-        n_bot   = len(trades)
-        sign    = "+" if pnl_bot >= 0 else ""
-        lines.append(f"  {label}: `{sign}${pnl_bot:.2f}` ({n_bot} trades)")
+        trades    = bot_valid[bid]
+        fees_bot  = sum(t.get("fee_usd") or 0.0 for t in trades)
+        pnl_bot   = sum(t.get("pnl_usd", 0.0) for t in trades)
+        gross_bot = pnl_bot + fees_bot
+        n_bot     = len(trades)
+        gsign     = "+" if gross_bot >= 0 else ""
+        nsign     = "+" if pnl_bot   >= 0 else ""
+        lines.append(
+            f"  {label}: bruto `{gsign}${gross_bot:.2f}` | fees `${fees_bot:.2f}` | neto `{nsign}${pnl_bot:.2f}` ({n_bot}t)"
+        )
     if corrupted_set:
         lines.append(f"  ⚠️ {len(corrupted_set)} trades corruptos excluidos")
     lines.append(
