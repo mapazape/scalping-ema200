@@ -428,13 +428,27 @@ async def _build_posicion(bot: "ScalpingBot") -> str:
                 f"{emoji} `{ts_str}` \\[{bname}\\] `{side_t}` {entry_t:.0f}→{exit_str} `{sign}${pnl:.2f}` {reason}"
             )
 
-    # ── Footer: balance real + métricas acumuladas ──────────────────
-    all_trades_flat  = [t for _, t in all_tagged]
-    valid_trades     = [t for t in all_trades_flat if t.get("entry", 0.0) and t.get("exit_price", 0.0)]
-    total_pnl_acc    = sum(t.get("pnl_usd", 0.0) for t in valid_trades)
-    wins_acc         = sum(1 for t in valid_trades if t.get("pnl_usd", 0.0) > 0)
-    n_total_acc      = len(valid_trades)
-    wr_pct           = (wins_acc / n_total_acc * 100) if n_total_acc > 0 else 0.0
+    # ── Footer: balance real + PnL por bot (trades reales) ─────────
+    all_trades_flat = [t for _, t in all_tagged]
+
+    corrupted_set: set[int] = set()
+    for t in all_trades_flat:
+        if t.get("entry", 0.0) == 0.0 or abs(t.get("pnl_usd", 0.0)) > 10:
+            corrupted_set.add(id(t))
+
+    bot_footer_labels = {
+        "btc-short": "📕 btc-short",
+        "btc-long":  "📗 btc-long",
+        "eth":       "💎 eth",
+    }
+    bot_valid: dict[str, list[dict]] = {bid: [] for bid in bot_footer_labels}
+    for bid, t in all_tagged:
+        if id(t) not in corrupted_set and bid in bot_valid:
+            bot_valid[bid].append(t)
+
+    global_wins  = sum(1 for ts in bot_valid.values() for t in ts if t.get("pnl_usd", 0.0) > 0)
+    global_total = sum(len(ts) for ts in bot_valid.values())
+    wr_pct       = (global_wins / global_total * 100) if global_total > 0 else 0.0
 
     days_active = 0
     if all_trades_flat:
@@ -445,14 +459,22 @@ async def _build_posicion(bot: "ScalpingBot") -> str:
         except Exception:
             pass
 
-    real_bal     = await _fetch_real_balance()
-    bal_str      = f"${real_bal:.2f} USDT" if real_bal is not None else "N/A"
-    sign_acc     = "+" if total_pnl_acc >= 0 else ""
+    real_bal = await _fetch_real_balance()
+    bal_str  = f"${real_bal:.2f} USDT" if real_bal is not None else "N/A"
 
     lines.append(f"\n{sep}")
     lines.append(f"💰 Balance real: `{bal_str}`")
+    lines.append("📊 PnL por bot (trades reales):")
+    for bid, label in bot_footer_labels.items():
+        trades  = bot_valid[bid]
+        pnl_bot = sum(t.get("pnl_usd", 0.0) for t in trades)
+        n_bot   = len(trades)
+        sign    = "+" if pnl_bot >= 0 else ""
+        lines.append(f"  {label}: `{sign}${pnl_bot:.2f}` ({n_bot} trades)")
+    if corrupted_set:
+        lines.append(f"  ⚠️ {len(corrupted_set)} trades corruptos excluidos")
     lines.append(
-        f"📊 PnL acum: `{sign_acc}${total_pnl_acc:.2f}` | WR: `{wins_acc}/{n_total_acc} ({wr_pct:.0f}%)` | Activo: `{days_active}d`"
+        f"📈 WR global: `{global_wins}/{global_total} ({wr_pct:.0f}%)` | Activo: `{days_active}d`"
     )
 
     return "\n".join(lines)
