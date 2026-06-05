@@ -14,6 +14,7 @@ RISK_PCT: float = float(os.getenv("RISK_PCT", "0.01"))  # fraction of balance ri
 
 # Bot identity for shared state management
 BOT_NAME: str = os.getenv("BOT_NAME", "btc-short")
+BOT_ID: str = os.getenv("BOT_ID", BOT_NAME)
 STATE_FILE: str = os.getenv("STATE_FILE", "/opt/bots/scalping-ema200/state.json")
 
 # Shared infrastructure files

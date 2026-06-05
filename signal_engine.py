@@ -1,4 +1,8 @@
+import json
 import logging
+import os
+import tempfile
+import time
 from typing import Optional
 
 import config
@@ -41,30 +45,60 @@ class SignalEngine:
             and rsi_curr > config.RSI_OVERBOUGHT
         )
 
+        ema200_dist = round((close - ema200) / ema200 * 100, 4)
+
         if long_signal:
             logger.info(
-                "LONG signal | close=%.2f ema50=%.2f ema200=%.2f rsi=%.2f",
-                close, ema50, ema200, rsi_curr,
+                "LONG signal | close=%.2f ema50=%.2f ema200=%.2f rsi=%.2f ema200_dist=%.4f%%",
+                close, ema50, ema200, rsi_curr, ema200_dist,
             )
-            return {
+            signal = {
                 "side": "LONG",
                 "entry_price": close,
                 "ema50": ema50,
                 "ema200": ema200,
                 "rsi_curr": rsi_curr,
+                "ema200_dist": ema200_dist,
             }
+            self._write_pending(signal)
+            return signal
 
         if short_signal:
             logger.info(
-                "SHORT signal | close=%.2f ema50=%.2f ema200=%.2f rsi=%.2f",
-                close, ema50, ema200, rsi_curr,
+                "SHORT signal | close=%.2f ema50=%.2f ema200=%.2f rsi=%.2f ema200_dist=%.4f%%",
+                close, ema50, ema200, rsi_curr, ema200_dist,
             )
-            return {
+            signal = {
                 "side": "SHORT",
                 "entry_price": close,
                 "ema50": ema50,
                 "ema200": ema200,
                 "rsi_curr": rsi_curr,
+                "ema200_dist": ema200_dist,
             }
+            self._write_pending(signal)
+            return signal
 
         return None
+
+    def _write_pending(self, signal: dict) -> None:
+        try:
+            try:
+                with open(config.CB_FILE, encoding="utf-8") as f:
+                    cb = json.load(f)
+            except Exception:
+                cb = {"trading_enabled": True}
+            cb["fsm_state"] = "PENDING_VALIDATION"
+            cb["bot_id"] = config.BOT_ID
+            cb["signal"] = signal
+            cb["pending_at"] = time.time()
+            dir_path = os.path.dirname(config.CB_FILE) or "."
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=dir_path, delete=False, suffix=".tmp", encoding="utf-8"
+            ) as tmp:
+                json.dump(cb, tmp)
+                tmp_path = tmp.name
+            os.replace(tmp_path, config.CB_FILE)
+            logger.info("circuit_breaker: PENDING_VALIDATION bot=%s", config.BOT_ID)
+        except Exception as exc:
+            logger.warning("_write_pending failed: %r", exc)

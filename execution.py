@@ -3,6 +3,8 @@ import hashlib
 import hmac
 import json
 import logging
+import os
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
@@ -12,6 +14,43 @@ import requests
 import config
 
 logger = logging.getLogger(__name__)
+
+
+def _wait_hermes_verdict(state_path: str, timeout: float = 6.0) -> bool:
+    """Poll circuit_breaker.json until Hermes writes a verdict. Fail-safe: REJECTED."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                data = json.load(f)
+            fsm = data.get("fsm_state", "IDLE")
+            if fsm == "APPROVED_BY_HERMES":
+                data["fsm_state"] = "IDLE"
+                dir_path = os.path.dirname(state_path) or "."
+                with tempfile.NamedTemporaryFile(
+                    mode="w", dir=dir_path, delete=False, suffix=".tmp", encoding="utf-8"
+                ) as tmp:
+                    json.dump(data, tmp)
+                    tmp_path = tmp.name
+                os.replace(tmp_path, state_path)
+                logger.info("Hermes: APPROVED — proceeding with order")
+                return True
+            elif fsm == "IDLE":
+                logger.info("Hermes: REJECTED — order cancelled")
+                return False
+        except Exception as exc:
+            logger.warning("_wait_hermes_verdict read error: %r", exc)
+        time.sleep(0.1)
+    logger.warning("_wait_hermes_verdict timeout %.1fs — fail-safe REJECTED", timeout)
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["fsm_state"] = "IDLE"
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+    return False
 
 
 @dataclass
@@ -54,6 +93,9 @@ class PaperBroker:
     def open_position(self, order: dict) -> Optional[Position]:
         if self.position is not None:
             logger.warning("open_position called while position already open — skipped")
+            return None
+
+        if not _wait_hermes_verdict(config.CB_FILE, timeout=6.0):
             return None
 
         entry = order["entry_price"]
@@ -305,6 +347,9 @@ class LiveBroker:
     def open_position(self, order: dict) -> Optional[Position]:
         if self.position is not None:
             logger.warning("open_position called while position already open — skipped")
+            return None
+
+        if not _wait_hermes_verdict(config.CB_FILE, timeout=6.0):
             return None
 
         side_map = {"LONG": "BUY", "SHORT": "SELL"}
