@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
+import aiohttp
 import requests
 
 import config
@@ -264,7 +267,59 @@ def _build_ultimo() -> str:
     return "\n".join(lines)
 
 
-def _build_posicion(bot: "ScalpingBot") -> str:
+async def _fetch_real_balance() -> Optional[float]:
+    """Consult Binance Futures account balance (USDT) in real time."""
+    if not config.BINANCE_API_KEY or not config.BINANCE_API_SECRET:
+        return None
+    ts = int(time.time() * 1000)
+    qs = f"timestamp={ts}"
+    sig = hmac.new(
+        config.BINANCE_API_SECRET.encode(),
+        qs.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    url = f"{config.BINANCE_FUTURES_REST_BASE}/fapi/v2/balance?{qs}&signature={sig}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                headers={"X-MBX-APIKEY": config.BINANCE_API_KEY},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("_fetch_real_balance HTTP %s", resp.status)
+                    return None
+                data = await resp.json()
+                for asset in data:
+                    if asset.get("asset") == "USDT":
+                        return float(asset["availableBalance"])
+    except Exception as exc:
+        logger.warning("_fetch_real_balance failed: %r", exc)
+    return None
+
+
+def _load_all_trades(journal_dir: str) -> list[dict]:
+    """Read all trade records from every JSONL file in journal_dir."""
+    trades: list[dict] = []
+    try:
+        for fname in sorted(os.listdir(journal_dir)):
+            if not fname.endswith(".jsonl"):
+                continue
+            path = os.path.join(journal_dir, fname)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if line:
+                            trades.append(json.loads(line))
+            except Exception as exc:
+                logger.warning("_load_all_trades %s: %s", path, exc)
+    except FileNotFoundError:
+        pass
+    return trades
+
+
+async def _build_posicion(bot: "ScalpingBot") -> str:
     sep = "━━━━━━━━━━━━━━━"
     lines = [f"📍 *POSICIÓN — 3 BOTS*\n{sep}"]
 
@@ -338,6 +393,67 @@ def _build_posicion(bot: "ScalpingBot") -> str:
                     lines.append(
                         f"  🎯 Trailing activo | mín: `{t_min:.2f}` | exit si ≥ `{trail_exit:.2f}`"
                     )
+
+    # ── Últimas 10 operaciones ──────────────────────────────────────
+    bot_name_map = {"btc-short": "BTC-S", "btc-long": "BTC-L", "eth": "ETH"}
+    all_tagged: list[tuple[str, dict]] = []
+    for bid, bdir in _BOT_DIRS.items():
+        for trade in _load_all_trades(os.path.join(bdir, "journals")):
+            all_tagged.append((bid, trade))
+
+    all_tagged.sort(key=lambda x: x[1].get("timestamp", ""), reverse=True)
+    last_10 = all_tagged[:10]
+
+    lines.append(f"\n{sep}\n📋 *ÚLTIMAS 10 OPERACIONES*")
+    if not last_10:
+        lines.append("_(sin datos)_")
+    else:
+        for bid, t in last_10:
+            pnl   = t.get("pnl_usd", 0.0)
+            emoji = "🟢" if pnl > 0 else "🔴"
+            ts    = t.get("timestamp", "")
+            try:
+                dt     = datetime.fromisoformat(ts)
+                ts_str = dt.strftime("%m-%d %H:%M")
+            except Exception:
+                ts_str = ts[:16]
+            side_t   = t.get("side", "?")
+            entry_t  = t.get("entry", 0.0)
+            exit_t   = t.get("exit_price", 0.0)
+            exit_str = f"{exit_t:.0f}" if exit_t else "N/A"
+            reason   = t.get("exit_reason", "?")
+            sign     = "+" if pnl >= 0 else ""
+            bname    = bot_name_map.get(bid, bid)
+            lines.append(
+                f"{emoji} `{ts_str}` \\[{bname}\\] `{side_t}` {entry_t:.0f}→{exit_str} `{sign}${pnl:.2f}` {reason}"
+            )
+
+    # ── Footer: balance real + métricas acumuladas ──────────────────
+    all_trades_flat  = [t for _, t in all_tagged]
+    valid_trades     = [t for t in all_trades_flat if t.get("entry", 0.0) and t.get("exit_price", 0.0)]
+    total_pnl_acc    = sum(t.get("pnl_usd", 0.0) for t in valid_trades)
+    wins_acc         = sum(1 for t in valid_trades if t.get("pnl_usd", 0.0) > 0)
+    n_total_acc      = len(valid_trades)
+    wr_pct           = (wins_acc / n_total_acc * 100) if n_total_acc > 0 else 0.0
+
+    days_active = 0
+    if all_trades_flat:
+        first_ts = min(t.get("timestamp", "") for t in all_trades_flat)
+        try:
+            first_dt    = datetime.fromisoformat(first_ts)
+            days_active = (datetime.now(tz=timezone.utc) - first_dt).days
+        except Exception:
+            pass
+
+    real_bal     = await _fetch_real_balance()
+    bal_str      = f"${real_bal:.2f} USDT" if real_bal is not None else "N/A"
+    sign_acc     = "+" if total_pnl_acc >= 0 else ""
+
+    lines.append(f"\n{sep}")
+    lines.append(f"💰 Balance real: `{bal_str}`")
+    lines.append(
+        f"📊 PnL acum: `{sign_acc}${total_pnl_acc:.2f}` | WR: `{wins_acc}/{n_total_acc} ({wr_pct:.0f}%)` | Activo: `{days_active}d`"
+    )
 
     return "\n".join(lines)
 
@@ -614,7 +730,7 @@ async def _handle_update(update: dict, bot: ScalpingBot) -> None:
         await tg_send(_build_config(bot))
 
     elif text.startswith("/posicion"):
-        await tg_send(_build_posicion(bot))
+        await tg_send(await _build_posicion(bot))
 
     elif text.startswith("/stat_bots"):
         await tg_send(_build_stat_bots(bot))
