@@ -1,7 +1,10 @@
 import os
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
+
+TZ_LOCAL = ZoneInfo("America/Santiago")
 
 SYMBOL: str = os.getenv("SYMBOL", "BTCUSDT")
 PAPER_MODE: bool = os.getenv("PAPER_MODE", "false").lower() == "true"

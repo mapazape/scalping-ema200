@@ -30,11 +30,19 @@ from risk_engine import RiskEngine
 from signal_engine import SignalEngine
 from trade_journal import TradeJournal
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)-20s %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%SZ",
-)
+class _ChileFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        from datetime import datetime
+        dt = datetime.fromtimestamp(record.created, tz=config.TZ_LOCAL)
+        return dt.strftime(datefmt or "%Y-%m-%dT%H:%M:%S%z")
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_ChileFormatter(
+    fmt="%(asctime)s %(levelname)-8s %(name)-20s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 logger = logging.getLogger("main")
 
 

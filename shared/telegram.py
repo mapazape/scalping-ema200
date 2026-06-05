@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import TYPE_CHECKING, Optional
 
 import aiohttp
@@ -195,7 +195,7 @@ def _load_all_trades(journal_dir: str) -> list[dict]:
 
 def _load_today_trades(journal_dir: str) -> list[dict]:
     """Read today's trades from a bot's journal directory."""
-    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(tz=config.TZ_LOCAL).strftime("%Y-%m-%d")
     path = os.path.join(journal_dir, "journals", f"trades_{today}.jsonl")
     trades: list[dict] = []
     try:
@@ -286,6 +286,19 @@ def _build_lado() -> str:
     return "\n".join(lines)
 
 
+def _fmt_ts_local(ts: str, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """Parse an ISO timestamp string and return it formatted in Chile local time."""
+    if not ts or ts == "N/A":
+        return ts
+    try:
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(config.TZ_LOCAL).strftime(fmt)
+    except Exception:
+        return ts[:16]
+
+
 def _build_ultimo() -> str:
     trades = _load_local_trades()
     if not trades:
@@ -305,7 +318,7 @@ def _build_ultimo() -> str:
         f"PnL: `${pnl:+.4f}` ({pnl_pct:+.2f}%)",
         f"RSI entrada: `{t.get('rsi_at_entry', 0):.2f}`",
         f"ATR entrada: `{t.get('atr_at_entry', 0):.2f}`",
-        f"Cierre (UTC): `{ts}`",
+        f"Cierre: `{_fmt_ts_local(ts)}`",
     ]
     open_t = t.get("open_time")
     if open_t is not None:
@@ -449,11 +462,7 @@ async def _build_posicion(bot: "ScalpingBot") -> str:
             pnl      = t.get("pnl_usd", 0.0)
             emoji    = "🟢" if pnl > 0 else "🔴"
             ts       = t.get("timestamp", "")
-            try:
-                dt     = datetime.fromisoformat(ts)
-                ts_str = dt.strftime("%m-%d %H:%M")
-            except Exception:
-                ts_str = ts[:16]
+            ts_str   = _fmt_ts_local(ts, fmt="%m-%d %H:%M")
             side_t   = t.get("side", "?")
             entry_t  = t.get("entry", 0.0)
             exit_t   = t.get("exit_price", 0.0)
@@ -491,8 +500,10 @@ async def _build_posicion(bot: "ScalpingBot") -> str:
     if all_trades_flat:
         first_ts = min(t.get("timestamp", "") for t in all_trades_flat)
         try:
-            first_dt    = datetime.fromisoformat(first_ts)
-            days_active = (datetime.now(tz=timezone.utc) - first_dt).days
+            first_dt = datetime.fromisoformat(first_ts)
+            if first_dt.tzinfo is None:
+                first_dt = first_dt.replace(tzinfo=UTC)
+            days_active = (datetime.now(tz=config.TZ_LOCAL) - first_dt).days
         except Exception:
             pass
 
@@ -621,7 +632,7 @@ def _send_close_signal(bot_id: str) -> None:
     """Write close_signal_{bot_id}.json so the target bot closes its position."""
     path = os.path.join(_CLOSE_SIGNAL_DIR, f"close_signal_{bot_id}.json")
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump({"close": True, "ts": datetime.now(timezone.utc).isoformat()}, fh)
+        json.dump({"close": True, "ts": datetime.now(config.TZ_LOCAL).isoformat()}, fh)
 
 
 def _parse_env_file(path: str) -> dict:

@@ -1,8 +1,10 @@
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
+
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +17,12 @@ class TradeJournal:
         os.makedirs(journal_dir, exist_ok=True)
 
     def _today_path(self) -> str:
-        date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.now(tz=config.TZ_LOCAL).strftime("%Y-%m-%d")
         return os.path.join(self.journal_dir, f"trades_{date_str}.jsonl")
 
     def record(self, trade: dict[str, Any]) -> None:
         entry = {
-            "timestamp":        datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp":        datetime.now(tz=config.TZ_LOCAL).isoformat(),
             "side":             trade.get("side"),
             "entry":            trade.get("entry_price"),
             "sl":               trade.get("sl"),
