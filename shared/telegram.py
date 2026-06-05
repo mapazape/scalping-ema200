@@ -8,7 +8,8 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, UTC
+from datetime import datetime, timezone
+_UTC = timezone.utc
 from typing import TYPE_CHECKING, Optional
 
 import aiohttp
@@ -293,7 +294,7 @@ def _fmt_ts_local(ts: str, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
     try:
         dt = datetime.fromisoformat(ts)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
+            dt = dt.replace(tzinfo=_UTC)
         return dt.astimezone(config.TZ_LOCAL).strftime(fmt)
     except Exception:
         return ts[:16]
@@ -502,7 +503,7 @@ async def _build_posicion(bot: "ScalpingBot") -> str:
         try:
             first_dt = datetime.fromisoformat(first_ts)
             if first_dt.tzinfo is None:
-                first_dt = first_dt.replace(tzinfo=UTC)
+                first_dt = first_dt.replace(tzinfo=_UTC)
             days_active = (datetime.now(tz=config.TZ_LOCAL) - first_dt).days
         except Exception:
             pass
