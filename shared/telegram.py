@@ -511,8 +511,44 @@ async def _build_posicion(bot: "ScalpingBot") -> str:
     real_bal = await _fetch_real_balance()
     bal_str  = f"${real_bal:.2f} USDT" if real_bal is not None else "N/A"
 
+    # Read open positions from each bot's state.json
+    _bot_state_files = {
+        "btc-short": "/opt/bots/scalping-ema200/state.json",
+        "btc-long":  "/opt/bots/scalping-ema200-long/state.json",
+        "eth":       "/opt/bots/scalping-eth/state.json",
+    }
+    _bot_margin_labels = {
+        "btc-short": "📕 btc-short",
+        "btc-long":  "📗 btc-long",
+        "eth":       "💎 eth",
+    }
+    open_positions = []
+    total_margin   = 0.0
+    for bid, sf in _bot_state_files.items():
+        try:
+            with open(sf, encoding="utf-8") as fh:
+                st = json.load(fh)
+            side  = st.get("side")
+            entry = st.get("entry_price")
+            qty   = st.get("qty")
+            if side and entry and qty:
+                margin = entry * qty
+                total_margin += margin
+                open_positions.append((bid, side, entry, margin))
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("margin read %s: %s", sf, exc)
+
     lines.append(f"\n{sep}")
     lines.append(f"💰 Balance real: `{bal_str}`")
+    if open_positions:
+        for bid, side, entry, margin in open_positions:
+            label = _bot_margin_labels.get(bid, bid)
+            lines.append(f"🔒 Margen retenido: `${margin:.2f}` → {label} (`{side}` @`{entry:,.2f}`)")
+        avail = (real_bal - total_margin) if real_bal is not None else None
+        avail_str = f"${avail:.2f} USDT" if avail is not None else "N/A"
+        lines.append(f"💵 Disponible: `{avail_str}`")
     lines.append("📊 PnL por bot (trades reales):")
     for bid, label in bot_footer_labels.items():
         trades    = bot_valid[bid]
