@@ -18,6 +18,9 @@ from typing import Optional
 
 import aiohttp
 
+import sys
+sys.path.insert(0, "/opt/bots/shared")
+
 import config
 import telegram as tg
 from data_feed import DataFeed
