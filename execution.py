@@ -16,7 +16,7 @@ import config
 logger = logging.getLogger(__name__)
 
 
-def _wait_hermes_verdict(state_path: str, timeout: float = 6.0) -> bool:
+def _wait_hermes_verdict(state_path: str, timeout: float = 120.0) -> bool:
     """Poll circuit_breaker.json until Hermes writes a verdict. Fail-safe: REJECTED."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -40,7 +40,7 @@ def _wait_hermes_verdict(state_path: str, timeout: float = 6.0) -> bool:
                 return False
         except Exception as exc:
             logger.warning("_wait_hermes_verdict read error: %r", exc)
-        time.sleep(0.1)
+        time.sleep(1.0)
     logger.warning("_wait_hermes_verdict timeout %.1fs — fail-safe REJECTED", timeout)
     try:
         with open(state_path, encoding="utf-8") as f:
@@ -95,7 +95,7 @@ class PaperBroker:
             logger.warning("open_position called while position already open — skipped")
             return None
 
-        if not _wait_hermes_verdict(config.CB_FILE, timeout=6.0):
+        if not _wait_hermes_verdict(config.CB_FILE, timeout=120.0):
             return None
 
         entry = order["entry_price"]
@@ -349,7 +349,7 @@ class LiveBroker:
             logger.warning("open_position called while position already open — skipped")
             return None
 
-        if not _wait_hermes_verdict(config.CB_FILE, timeout=6.0):
+        if not _wait_hermes_verdict(config.CB_FILE, timeout=120.0):
             return None
 
         side_map = {"LONG": "BUY", "SHORT": "SELL"}
