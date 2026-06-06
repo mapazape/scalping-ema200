@@ -53,8 +53,9 @@ BINANCE_API_KEY: str    = os.getenv("BINANCE_API_KEY", "")
 BINANCE_API_SECRET: str = os.getenv("BINANCE_API_SECRET", "")
 
 # Position sizing
-POSITION_SIZE_PCT: float = float(os.getenv("POSITION_SIZE_PCT", "0.10"))
-MAX_LEVERAGE: float      = float(os.getenv("MAX_LEVERAGE", "1.0"))
+POSITION_SIZE_PCT: float    = float(os.getenv("POSITION_SIZE_PCT", "0.10"))
+MAX_LEVERAGE: float          = float(os.getenv("MAX_LEVERAGE", "1.0"))
+MIN_BINANCE_NOTIONAL: float  = float(os.getenv("MIN_BINANCE_NOTIONAL", "20.0"))  # Binance Futures hard floor
 SL_PCT: float            = float(os.getenv("SL_PCT", "0.0050"))
 TP_PCT: float            = float(os.getenv("TP_PCT", "0.0100"))
 TRAILING_STOP_PCT: float = float(os.getenv("TRAILING_STOP_PCT", "0.005"))

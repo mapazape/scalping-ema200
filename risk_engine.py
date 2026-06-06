@@ -31,6 +31,12 @@ class RiskEngine:
 
         entry = signal["entry_price"]
         notional = balance * config.POSITION_SIZE_PCT * config.MAX_LEVERAGE
+        if notional < config.MIN_BINANCE_NOTIONAL:
+            logger.warning(
+                "notional %.2f below exchange minimum %.2f — clamping up",
+                notional, config.MIN_BINANCE_NOTIONAL,
+            )
+            notional = config.MIN_BINANCE_NOTIONAL
         qty = notional / entry
 
         if signal["side"] == "LONG":
