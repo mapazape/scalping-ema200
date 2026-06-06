@@ -307,6 +307,11 @@ class LiveBroker:
             raise RuntimeError(
                 f"Binance {method} {path} → HTTP {resp.status_code}: {data}"
             )
+        # Binance returns HTTP 200 for application-level errors; detect them explicitly.
+        if isinstance(data, dict) and isinstance(data.get("code"), int) and data["code"] < 0:
+            raise RuntimeError(
+                f"Binance {method} {path} → API error {data['code']}: {data.get('msg')}"
+            )
         return data
 
     def _fetch_lot_size(self) -> tuple[float, float]:
@@ -381,6 +386,11 @@ class LiveBroker:
         fill_resp = entry_resp
         if fill_resp.get("status") != "FILLED":
             order_id = entry_resp.get("orderId")
+            if order_id is None:
+                logger.error(
+                    "open_position: entry response has no orderId — aborting. resp=%r", entry_resp
+                )
+                return None
             for attempt in range(5):
                 time.sleep(0.5)
                 try:
