@@ -155,6 +155,7 @@ class ScalpingBot:
         self._cooldown_until: float = 0.0
         self._paused: bool = False
         self._state_file = config.STATE_FILE
+        self._cooldown_file = config.STATE_FILE.replace("state.json", "cooldown.json")
         self._total_balance: float = 0.0  # raw Binance balance before division
 
         self.indicators = Indicators()
@@ -202,6 +203,27 @@ class ScalpingBot:
                 "position restored: %s entry=%.2f sl=%.2f tp=%.2f",
                 restored.side, restored.entry_price, restored.sl, restored.tp,
             )
+
+    def _save_cooldown(self) -> None:
+        expiry_wall = time.time() + (self._cooldown_until - time.monotonic())
+        try:
+            with open(self._cooldown_file, "w", encoding="utf-8") as fh:
+                json.dump({"cooldown_until": expiry_wall}, fh)
+        except Exception as exc:
+            logger.warning("_save_cooldown failed: %r", exc)
+
+    def _load_cooldown(self) -> None:
+        try:
+            with open(self._cooldown_file, encoding="utf-8") as fh:
+                data = json.load(fh)
+            remaining = data.get("cooldown_until", 0.0) - time.time()
+            if remaining > 0:
+                self._cooldown_until = time.monotonic() + remaining
+                logger.info("cooldown restored: %.0f s remaining", remaining)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("_load_cooldown failed: %r", exc)
 
     # ------------------------------------------------------------------
     # Shared bot state helpers
@@ -323,6 +345,7 @@ class ScalpingBot:
 
         await self._refresh_balance()
         self._hydrate_position_from_state()
+        self._load_cooldown()
         self.stats.initial_balance = self.broker.balance
         logger.info("balance=%.2f | entering event loop", self.broker.balance)
 
@@ -416,6 +439,7 @@ class ScalpingBot:
 
         self._cooldown_until = time.monotonic() + config.COOLDOWN_SECONDS
         logger.info("cooldown %.0f s after close", config.COOLDOWN_SECONDS)
+        self._save_cooldown()
 
         self._transition(State.IN_POSITION, State.IDLE, reason=f"exit:{reason}")
 
