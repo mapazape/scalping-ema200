@@ -230,13 +230,21 @@ class ScalpingBot:
     # ------------------------------------------------------------------
 
     def _count_active_bots(self) -> int:
-        """Count running bot instances from shared state file (heartbeat < 120s)."""
+        """Count running bot instances from shared state file (heartbeat < 120s), excluding intentionally paused bots."""
         try:
             with open(config.BOT_STATES_FILE, encoding="utf-8") as fh:
                 states = json.load(fh)
+            try:
+                with open("/opt/bots/hermes-orchestrator/pause_reasons.json", encoding="utf-8") as fh:
+                    paused_ids = set(json.load(fh).keys())
+            except Exception:
+                paused_ids = set()
             now = time.time()
             return max(
-                sum(1 for v in states.values() if now - v.get("heartbeat", 0) < 120),
+                sum(
+                    1 for k, v in states.items()
+                    if k not in paused_ids and now - v.get("heartbeat", 0) < 120
+                ),
                 1,
             )
         except Exception:
