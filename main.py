@@ -386,6 +386,21 @@ class ScalpingBot:
                 pass
             self.stats.record(trade)
             self.journal.record(trade)
+            _feedback = {
+                "bot": "btc-short",
+                "side": trade["side"],
+                "entry": trade["entry_price"],
+                "exit_reason": "MANUAL_CERRAR",
+                "pnl_usd": trade["pnl_usd"],
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+            }
+            try:
+                _tmp = "/opt/bots/hermes-orchestrator/last_trade_result.json.tmp"
+                with open(_tmp, "w", encoding="utf-8") as _fh:
+                    json.dump(_feedback, _fh)
+                os.replace(_tmp, "/opt/bots/hermes-orchestrator/last_trade_result.json")
+            except Exception as _exc:
+                logger.warning("feedback write failed: %r", _exc)
             await self._refresh_balance()
             self._transition(self.state, State.IDLE, reason="MANUAL_CERRAR")
         return trade
