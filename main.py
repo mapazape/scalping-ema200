@@ -50,8 +50,8 @@ logger = logging.getLogger("main")
 # Binance Futures balance helper
 # ------------------------------------------------------------------
 
-async def fetch_futures_usdt_balance() -> Optional[float]:
-    """Return available USDT balance from Binance Futures, or None on failure."""
+async def fetch_futures_usdt_balance() -> Optional[tuple]:
+    """Return (available, total) USDT balance from Binance Futures, or None on failure."""
     if not config.BINANCE_API_KEY or not config.BINANCE_API_SECRET:
         return None
     ts = int(time.time() * 1000)
@@ -75,7 +75,7 @@ async def fetch_futures_usdt_balance() -> Optional[float]:
                 data = await resp.json()
                 for asset in data:
                     if asset.get("asset") == "USDT":
-                        return float(asset["availableBalance"])
+                        return float(asset["availableBalance"]), float(asset["balance"])
                 logger.warning("fetch_futures_usdt_balance: USDT not found in response")
     except Exception as exc:
         logger.warning("fetch_futures_usdt_balance failed: %r", exc)
@@ -327,15 +327,16 @@ class ScalpingBot:
             return True
 
     async def _refresh_balance(self) -> None:
-        real = await fetch_futures_usdt_balance()
-        if real is not None:
-            self._total_balance = real
+        result = await fetch_futures_usdt_balance()
+        if result is not None:
+            available, total = result
+            self._total_balance = total
             active = self._count_active_bots()
-            allocated = real / active
+            allocated = available / active
             self.broker.balance = allocated
             logger.info(
-                "balance: total=%.2f active_bots=%d allocated=%.2f USDT",
-                real, active, allocated,
+                "balance: total=%.2f available=%.2f active_bots=%d allocated=%.2f USDT",
+                total, available, active, allocated,
             )
         else:
             logger.warning(
