@@ -437,12 +437,18 @@ class ScalpingBot:
         self.journal.record(trade)
         await self._refresh_balance()
 
-        emoji = "✅" if trade["pnl_usd"] > 0 else "❌"
+        _pnl = trade["pnl_usd"]
+        _fees = trade.get("fee_usd", 0.0)
+        if _pnl >= 0:
+            _hdr = f"🏆 {trade['side']} cerrado — GANASTE +${_pnl:.2f}"
+            _trend = "📈"
+        else:
+            _verb = "SL tocado" if reason == "SL" else "perdido"
+            _hdr = f"💸 {trade['side']} cerrado — {_verb} ${_pnl:.2f}"
+            _trend = "📉"
         await tg.tg_send(
-            f"{emoji} *TRADE CERRADO* — `{reason}`\n"
-            f"`{trade['side']}` | entry: `{trade['entry_price']:.2f}` → exit: `{exit_price:.2f}`\n"
-            f"PnL: `${trade['pnl_usd']:+.4f}` ({trade['pnl_pct']:+.2f}%)\n"
-            f"Balance: `${self.broker.balance:.2f}`"
+            f"{_hdr}\n"
+            f"{_trend} ${trade['entry_price']:.2f} → ${exit_price:.2f} via {reason} | Fees: ${_fees:.2f}"
         )
 
         self._cooldown_until = time.monotonic() + config.COOLDOWN_SECONDS
@@ -492,11 +498,15 @@ class ScalpingBot:
         if position is not None:
             self.broker.save_state(self._state_file)
             self._transition(State.IDLE, State.IN_POSITION, reason=order["side"])
-            emoji = "📗" if order["side"] == "LONG" else "📕"
+            _side = order["side"]
+            _hdr = (
+                f"🎯 SHORT activado @ ${order['entry_price']:,.2f} — cazando la caída"
+                if _side == "SHORT"
+                else f"🚀 LONG activado @ ${order['entry_price']:,.2f} — cazando el alza"
+            )
             await tg.tg_send(
-                f"{emoji} *TRADE ABIERTO* — `{order['side']}`\n"
-                f"@ `{order['entry_price']:.2f}` | SL: `{order['sl']:.2f}` | TP: `{order['tp']:.2f}`\n"
-                f"Notional: `${order['notional']:.2f}` | Qty: `{order['qty']:.6f}`"
+                f"{_hdr}\n"
+                f"📍 SL: ${order['sl']:.2f} | TP: ${order['tp']:.2f} | Notional: ${order['notional']:.2f}"
             )
 
     async def _poll_close_signal(self) -> None:
