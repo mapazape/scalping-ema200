@@ -358,7 +358,7 @@ class ScalpingBot:
         logger.info("balance=%.2f | entering event loop", self.broker.balance)
 
         await tg.tg_send(
-            f"🚀 *Bot iniciado*\n"
+            f"🚀 *Bot iniciado* (SHORT)\n"
             f"Symbol: `{config.SYMBOL}` | Paper: `{config.PAPER_MODE}`\n"
             f"Capital: `${self.broker.balance:.2f}`"
         )
