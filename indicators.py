@@ -112,3 +112,6 @@ class Indicators:
 
     def last_close_1m(self) -> Optional[float]:
         return self._m1[-1]["close"] if self._m1 else None
+
+    def prev_close_1m(self) -> Optional[float]:
+        return self._m1[-2]["close"] if len(self._m1) >= 2 else None

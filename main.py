@@ -260,7 +260,8 @@ class ScalpingBot:
                 states = {}
 
             pos = self.broker.position
-            price  = self.indicators.last_close_1m()
+            price      = self.indicators.last_close_1m()
+            prev_close = self.indicators.prev_close_1m()
             ema200 = self.indicators.ema200_1h()
             ema50  = self.indicators.ema50_1h()
             rsi_pair = self.indicators.rsi14_1m()
@@ -294,6 +295,7 @@ class ScalpingBot:
                 "allocated_balance": self.broker.balance,
                 "total_balance":     self._total_balance,
                 "price":             price,
+                "prev_close":        prev_close,
                 "ema200":            ema200,
                 "ema50":             ema50,
                 "rsi":               rsi,
