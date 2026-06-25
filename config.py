@@ -59,6 +59,7 @@ MIN_BINANCE_NOTIONAL: float  = float(os.getenv("MIN_BINANCE_NOTIONAL", "20.0")) 
 SL_PCT: float            = float(os.getenv("SL_PCT", "0.0050"))
 TP_PCT: float            = float(os.getenv("TP_PCT", "0.0100"))
 TRAILING_STOP_PCT: float = float(os.getenv("TRAILING_STOP_PCT", "0.005"))
+TRAILING_ACTIVATION_PCT: float = float(os.getenv("TRAILING_ACTIVATION_PCT", "0.003"))
 REVERSAL_THRESHOLD: float = float(os.getenv("REVERSAL_THRESHOLD", "0.02"))  # 2% move triggers circuit-breaker reversal check
 
 # ATR used only as a market-condition filter (not for SL/TP sizing)

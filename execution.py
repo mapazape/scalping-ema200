@@ -216,8 +216,9 @@ class PaperBroker:
             price = self._bid
             if price <= pos.sl:
                 return price, "SL"
+            activation_price = pos.entry_price * (1 + config.TRAILING_ACTIVATION_PCT)
             if not self._trailing_active:
-                if price >= pos.tp:
+                if price >= activation_price:
                     self._trailing_active = True
                     self._trailing_max = price
                     logger.info("Trailing Stop ACTIVATED | LONG | price=%.2f", price)
@@ -236,8 +237,9 @@ class PaperBroker:
             price = self._ask
             if price >= pos.sl:
                 return price, "SL"
+            activation_price = pos.entry_price * (1 - config.TRAILING_ACTIVATION_PCT)
             if not self._trailing_active:
-                if price <= pos.tp:
+                if price <= activation_price:
                     self._trailing_active = True
                     self._trailing_min = price
                     logger.info("Trailing Stop ACTIVATED | SHORT | price=%.2f", price)
@@ -547,8 +549,9 @@ class LiveBroker:
             price = self._bid
             if price <= pos.sl:
                 return price, "SL"
+            activation_price = pos.entry_price * (1 + config.TRAILING_ACTIVATION_PCT)
             if not self._trailing_active:
-                if price >= pos.tp:
+                if price >= activation_price:
                     self._trailing_active = True
                     self._trailing_max = price
                     logger.info("Trailing Stop ACTIVATED | LONG | price=%.2f", price)
@@ -567,8 +570,9 @@ class LiveBroker:
             price = self._ask
             if price >= pos.sl:
                 return price, "SL"
+            activation_price = pos.entry_price * (1 - config.TRAILING_ACTIVATION_PCT)
             if not self._trailing_active:
-                if price <= pos.tp:
+                if price <= activation_price:
                     self._trailing_active = True
                     self._trailing_min = price
                     logger.info("Trailing Stop ACTIVATED | SHORT | price=%.2f", price)
